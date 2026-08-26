@@ -1,5 +1,13 @@
-## Summary
-<!-- Describe the problem and the proposed solution -->
+## Description
+
+### Motivation
+<!-- Why is this change required? What problem does it solve? -->
+
+### Changes Made
+<!-- Detailed breakdown of the technical changes introduced -->
+
+### Breaking Changes
+<!-- List any breaking API, CLI, or behavioral changes, or state "None" -->
 
 ## Classification
 - **Type**: <!-- feat | fix | perf | refactor | test | docs | chore | ci -->
