@@ -1,0 +1,22 @@
+# <type>(<scope>): <subject> (max 50-72 chars)
+# 
+# --- Allowed Types ---
+# feat     : New feature or parity capability
+# fix      : Bug fix / parser correction
+# perf     : Performance / memory allocation improvement
+# refactor : Code structure change without logic modification
+# test     : Adding / updating unit, integration, or parity tests
+# docs     : Documentation, README, or architecture updates
+# chore    : Dependency updates, build scripts, workspace config
+# ci       : CI/CD workflow changes
+#
+# --- Allowed Scopes ---
+# core, similarity, parser, engine, cli, headless, hybrid, scope, deps, corpus
+#
+# --- Message Body ---
+# Explain *why* this change is necessary and *what* was done.
+# Mention parity with ProjectDiscovery Katana / Corpus section if relevant.
+
+# --- Footer ---
+# Closes #123
+# Ref: KATANA_ARCHITECTURE_CORPUS Section X.Y
