@@ -1,28 +1,22 @@
-<h1 align="center">
-  Katana (Rust)
-</h1>
+# Katana (Rust)
 
-<p align="center">
-  <strong>A fast, memory-safe, asynchronous web crawler for offensive-security automation.</strong>
-</p>
+A fast, memory-safe, asynchronous web crawler for offensive-security automation.
 
-<p align="center">
-  <em>High-performance Rust rewrite and 1:1 feature-parity port of <a href="https://github.com/projectdiscovery/katana">ProjectDiscovery's Katana</a>.</em>
-</p>
+High-performance Rust rewrite and 1:1 feature-parity port of [ProjectDiscovery Katana](https://github.com/projectdiscovery/katana).
 
 ---
 
-## 📖 Attribution & Acknowledgements
+## Attribution & Acknowledgements
 
-**Katana-Rust** is an independent, 1:1 feature-parity Rust port of **[ProjectDiscovery Katana](https://github.com/projectdiscovery/katana)** (originally written in Go). 
+**Katana-Rust** is an independent, 1:1 feature-parity Rust port of **[ProjectDiscovery Katana](https://github.com/projectdiscovery/katana)** (originally written in Go).
 
 All original crawling methodologies, heuristic pipelines, and architectural concepts were pioneered by the **[ProjectDiscovery](https://projectdiscovery.io)** team and open-source contributors. This project aims to bring memory-safety, zero-cost abstractions, deterministic concurrency, and raw throughput improvements of the Rust ecosystem to the Katana crawler.
 
 ---
 
-## 🏛️ Architecture & Crate Layout
+## Architecture & Workspace Layout
 
-The project is structured as a modular Cargo Workspace:
+The project is structured as a modular Cargo workspace:
 
 ```
 katana-rust/
@@ -39,7 +33,7 @@ For the comprehensive technical specification, refer to [KATANA_ARCHITECTURE_COR
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 * Rust 1.80+ (MSRV)
@@ -60,5 +54,6 @@ cargo build --release
 
 ---
 
-## 📄 License
+## License
+
 Licensed under the [MIT License](./LICENSE.md).
