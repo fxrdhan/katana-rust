@@ -1,21 +1,20 @@
 # <type>(<scope>): <subject> (imperative mood, max 50-72 chars)
 #
 # Types:
-#   feat     : New feature or parity capability
-#   fix      : Bug fix or parser correction
-#   perf     : Performance or memory allocation optimization
-#   refactor : Code restructuring without behavior changes
-#   test     : Unit, integration, or parity tests
-#   docs     : Documentation or architecture updates
-#   chore    : Dependencies, tooling, or workspace maintenance
-#   ci       : Continuous integration changes
+#   feat     : New feature or capability
+#   fix      : Bug fix
+#   perf     : Performance or memory optimization
+#   refactor : Code change that neither fixes a bug nor adds a feature
+#   test     : Adding or correcting tests
+#   docs     : Documentation updates
+#   chore    : Build process, dependencies, or tooling changes
+#   ci       : CI configuration updates
 #
 # Scopes:
-#   core, similarity, parser, engine, cli, headless, hybrid, scope, deps, corpus
+#   core, similarity, parser, engine, cli, headless, hybrid, deps
 #
 # Body:
 #   Explain the problem, motivation, and solution in detail.
 #
 # Footer:
 #   Closes #123
-#   Ref: KATANA_ARCHITECTURE_CORPUS Section X.Y
