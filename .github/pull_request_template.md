@@ -15,11 +15,6 @@
 - [ ] `cargo fmt --check`
 - [ ] Manual / live crawl test against reference target
 
-```bash
-# Test command
-cargo test -p <crate_name>
-```
-
 ## Checklist
 - [ ] Code follows formatting and clippy rules.
 - [ ] Unit tests added or updated for new logic.
