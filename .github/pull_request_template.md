@@ -1,6 +1,6 @@
 ## Description
 
-### Context
+### Purpose
 <!-- Why is this change required? What problem does it solve? -->
 
 ### Changes Made
