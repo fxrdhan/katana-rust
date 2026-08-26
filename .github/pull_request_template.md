@@ -9,8 +9,14 @@
 - **Related Issue**: <!-- e.g. #123 -->
 
 ## Verification
-<!-- Commands and steps used to verify changes -->
+- [ ] `cargo check --workspace`
+- [ ] `cargo test --workspace`
+- [ ] `cargo clippy --workspace -- -D warnings`
+- [ ] `cargo fmt --check`
+- [ ] Manual / live crawl test against reference target
+
 ```bash
+# Test command
 cargo test -p <crate_name>
 ```
 
