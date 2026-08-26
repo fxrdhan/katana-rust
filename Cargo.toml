@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/katana-core",
+    "crates/katana-similarity",
+    "crates/katana-parser",
+    "crates/katana-engine",
+    "crates/katana-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["fxrdhan <fxrdhan@github>"]
+license = "MIT"
+repository = "https://github.com/fxrdhan/katana-rust"
+readme = "README.md"
+description = "A fast, memory-safe, asynchronous web crawler for offensive-security automation — high-performance Rust port of ProjectDiscovery Katana"
+
+[workspace.dependencies]
+# Workspace Crates
+katana-core = { path = "crates/katana-core" }
+katana-similarity = { path = "crates/katana-similarity" }
+katana-parser = { path = "crates/katana-parser" }
+katana-engine = { path = "crates/katana-engine" }
+
+# Async & Concurrency
+tokio = { version = "1.43", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+tokio-util = "0.7"
+
+# HTTP & Networking
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "cookies", "json", "stream"] }
+url = { version = "2.5", features = ["serde"] }
+http = "1.2"
+
+# HTML & Parsing
+scraper = "0.22"
+regex = "1.11"
+lazy_static = "1.5"
+
+# Serialization & CLI
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Utilities & Error Handling
+thiserror = "2.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+colored = "3.0"
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6.1"
+lru = "0.13"
+md-5 = "0.10"
+sha2 = "0.10"

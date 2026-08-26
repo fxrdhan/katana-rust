@@ -1,0 +1,15 @@
+[package]
+name = "katana-similarity"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "3-Layer deduplication, URL structural fingerprinting, adaptive path trie, and Charikar SimHash for Katana"
+
+[dependencies]
+katana-core = { workspace = true }
+regex = { workspace = true }
+lazy_static = { workspace = true }
+lru = { workspace = true }
+url = { workspace = true }
+scraper = { workspace = true }

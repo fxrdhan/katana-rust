@@ -1,0 +1,24 @@
+[package]
+name = "katana-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Command-line interface and runner for Katana (Rust)"
+
+[[bin]]
+name = "katana"
+path = "src/main.rs"
+
+[dependencies]
+katana-core = { workspace = true }
+katana-similarity = { workspace = true }
+katana-parser = { workspace = true }
+katana-engine = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+colored = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }

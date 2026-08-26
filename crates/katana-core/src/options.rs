@@ -1,0 +1,87 @@
+use std::collections::HashMap;
+
+/// Global crawler configuration options.
+#[derive(Debug, Clone)]
+pub struct Options {
+    pub urls: Vec<String>,
+    pub max_depth: usize,
+    pub crawl_duration: Option<u64>,
+    pub concurrency: usize,
+    pub parallelism: usize,
+    pub delay: u64,
+    pub rate_limit: usize,
+    pub rate_limit_minute: usize,
+    pub headless: bool,
+    pub headless_hybrid: bool,
+    pub system_chrome: bool,
+    pub chrome_data_dir: Option<String>,
+    pub chrome_ws_url: Option<String>,
+    pub scrape_js: bool,
+    pub scrape_jsluice: bool,
+    pub form_extraction: bool,
+    pub automatic_form_fill: bool,
+    pub scope: Vec<String>,
+    pub out_of_scope: Vec<String>,
+    pub display_out_scope: bool,
+    pub ignore_query_params: bool,
+    pub filter_similar: bool,
+    pub filter_similar_threshold: usize,
+    pub max_domain_pages: usize,
+    pub path_climb: bool,
+    pub custom_headers: HashMap<String, String>,
+    pub proxy: Option<String>,
+    pub disable_redirects: bool,
+    pub body_read_size: usize,
+    pub retries: usize,
+    pub timeout: u64,
+    pub user_agent: Option<String>,
+    pub tls_impersonate: bool,
+    pub auth_credentials: Option<String>,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            urls: Vec::new(),
+            max_depth: 3,
+            crawl_duration: None,
+            concurrency: 10,
+            parallelism: 10,
+            delay: 0,
+            rate_limit: 150,
+            rate_limit_minute: 0,
+            headless: false,
+            headless_hybrid: false,
+            system_chrome: false,
+            chrome_data_dir: None,
+            chrome_ws_url: None,
+            scrape_js: false,
+            scrape_jsluice: false,
+            form_extraction: false,
+            automatic_form_fill: false,
+            scope: Vec::new(),
+            out_of_scope: Vec::new(),
+            display_out_scope: false,
+            ignore_query_params: false,
+            filter_similar: false,
+            filter_similar_threshold: 10,
+            max_domain_pages: 0,
+            path_climb: false,
+            custom_headers: HashMap::new(),
+            proxy: None,
+            disable_redirects: false,
+            body_read_size: 4 * 1024 * 1024, // 4 MiB
+            retries: 1,
+            timeout: 10,
+            user_agent: None,
+            tls_impersonate: false,
+            auth_credentials: None,
+        }
+    }
+}
+
+/// Runtime assembly of components derived from Options.
+#[derive(Debug, Clone, Default)]
+pub struct CrawlerOptions {
+    pub options: Options,
+}

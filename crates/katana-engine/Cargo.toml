@@ -1,0 +1,22 @@
+[package]
+name = "katana-engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Crawling engines (Standard, Hybrid, Headless) and execution runtime for Katana"
+
+[dependencies]
+katana-core = { workspace = true }
+katana-similarity = { workspace = true }
+katana-parser = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+url = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+dashmap = { workspace = true }
+md-5 = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }

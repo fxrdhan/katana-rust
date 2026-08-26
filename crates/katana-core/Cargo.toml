@@ -1,0 +1,19 @@
+[package]
+name = "katana-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Core models, navigation request/response primitives, scope management, and options for Katana"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+regex = { workspace = true }
+lazy_static = { workspace = true }
+md-5 = { workspace = true }
+dashmap = { workspace = true }
+tracing = { workspace = true }

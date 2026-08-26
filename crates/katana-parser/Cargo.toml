@@ -1,0 +1,14 @@
+[package]
+name = "katana-parser"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "HTML/DOM selector extraction, regex endpoint scraping, and form parsing for Katana"
+
+[dependencies]
+katana-core = { workspace = true }
+scraper = { workspace = true }
+regex = { workspace = true }
+lazy_static = { workspace = true }
+url = { workspace = true }
