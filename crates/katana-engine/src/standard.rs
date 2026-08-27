@@ -46,7 +46,11 @@ impl StandardEngine {
 
 #[async_trait]
 impl Engine for StandardEngine {
-    async fn crawl(&self, root_url: &str, sender: mpsc::UnboundedSender<CrawlResult>) -> anyhow::Result<()> {
+    async fn crawl(
+        &self,
+        root_url: &str,
+        sender: mpsc::UnboundedSender<CrawlResult>,
+    ) -> anyhow::Result<()> {
         let parsed_root = Url::parse(root_url)?;
         let root_hostname = parsed_root.host_str().unwrap_or("").to_string();
 
@@ -111,11 +115,15 @@ impl Engine for StandardEngine {
                     let _ = sender.send(crawl_result);
 
                     // Discover new links
-                    let mut discovered = parse_html_endpoints(&current_req.url, &body_text, current_req.depth);
+                    let mut discovered =
+                        parse_html_endpoints(&current_req.url, &body_text, current_req.depth);
 
                     if self.options.scrape_js {
-                        let regex_discovered =
-                            extract_endpoints_from_regex(&current_req.url, &body_text, current_req.depth);
+                        let regex_discovered = extract_endpoints_from_regex(
+                            &current_req.url,
+                            &body_text,
+                            current_req.depth,
+                        );
                         discovered.extend(regex_discovered);
                     }
 

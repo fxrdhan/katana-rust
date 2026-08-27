@@ -3,7 +3,11 @@ use scraper::{Html, Selector};
 use url::Url;
 
 /// Parses HTML content and extracts potential navigation endpoints.
-pub fn parse_html_endpoints(base_url: &str, html_content: &str, current_depth: usize) -> Vec<Request> {
+pub fn parse_html_endpoints(
+    base_url: &str,
+    html_content: &str,
+    current_depth: usize,
+) -> Vec<Request> {
     let mut results = Vec::new();
     let document = Html::parse_document(html_content);
     let base = match Url::parse(base_url) {

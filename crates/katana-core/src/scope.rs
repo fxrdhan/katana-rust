@@ -9,7 +9,10 @@ pub struct ScopeManager {
 }
 
 impl ScopeManager {
-    pub fn new(scope_patterns: &[String], out_of_scope_patterns: &[String]) -> Result<Self, regex::Error> {
+    pub fn new(
+        scope_patterns: &[String],
+        out_of_scope_patterns: &[String],
+    ) -> Result<Self, regex::Error> {
         let mut scope_regexes = Vec::new();
         for pat in scope_patterns {
             scope_regexes.push(Regex::new(pat)?);

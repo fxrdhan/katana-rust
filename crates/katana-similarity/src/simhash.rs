@@ -22,18 +22,18 @@ where
 
     for token in tokens {
         let hash = fnv64a(token.as_ref());
-        for i in 0..64 {
+        for (i, val) in v.iter_mut().enumerate() {
             if (hash & (1 << i)) != 0 {
-                v[i] += 1;
+                *val += 1;
             } else {
-                v[i] -= 1;
+                *val -= 1;
             }
         }
     }
 
     let mut fingerprint = 0u64;
-    for i in 0..64 {
-        if v[i] > 0 {
+    for (i, &val) in v.iter().enumerate() {
+        if val > 0 {
             fingerprint |= 1 << i;
         }
     }
@@ -99,6 +99,9 @@ mod tests {
         let dist_1_2 = hamming_distance(fp1, fp2);
         let dist_1_3 = hamming_distance(fp1, fp3);
 
-        assert!(dist_1_2 < dist_1_3, "Similar documents must have lower Hamming distance");
+        assert!(
+            dist_1_2 < dist_1_3,
+            "Similar documents must have lower Hamming distance"
+        );
     }
 }

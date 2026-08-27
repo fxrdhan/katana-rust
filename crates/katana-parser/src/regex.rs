@@ -10,7 +10,11 @@ lazy_static! {
 }
 
 /// Extract candidate endpoints from raw JavaScript or body text using regex.
-pub fn extract_endpoints_from_regex(base_url: &str, content: &str, current_depth: usize) -> Vec<Request> {
+pub fn extract_endpoints_from_regex(
+    base_url: &str,
+    content: &str,
+    current_depth: usize,
+) -> Vec<Request> {
     let mut results = Vec::new();
     let base = match Url::parse(base_url) {
         Ok(u) => u,

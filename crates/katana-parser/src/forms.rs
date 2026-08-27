@@ -17,7 +17,11 @@ pub fn parse_forms(html_content: &str) -> Vec<Form> {
 
     for form_el in document.select(&form_selector) {
         let action = form_el.value().attr("action").unwrap_or("").to_string();
-        let method = form_el.value().attr("method").unwrap_or("GET").to_uppercase();
+        let method = form_el
+            .value()
+            .attr("method")
+            .unwrap_or("GET")
+            .to_uppercase();
         let enctype = form_el
             .value()
             .attr("enctype")
