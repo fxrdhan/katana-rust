@@ -5,10 +5,22 @@ on:
     branches:
       - main
       - dev
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".gitignore"
+      - ".gitmessage"
+      - "LICENSE*"
   pull_request:
     branches:
       - main
       - dev
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".gitignore"
+      - ".gitmessage"
+      - "LICENSE*"
   workflow_dispatch:
 
 concurrency:
