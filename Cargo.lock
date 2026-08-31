@@ -923,6 +923,7 @@ dependencies = [
  "katana-core",
  "katana-parser",
  "katana-similarity",
+ "lru",
  "md-5",
  "reqwest",
  "thiserror",
