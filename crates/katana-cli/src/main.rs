@@ -57,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
         timeout: args.timeout,
         delay: args.delay,
         scrape_js: args.js_crawl,
+        scrape_jsluice: args.jsluice,
         form_extraction: args.form_extraction,
         ignore_query_params: args.ignore_query_params,
         filter_similar: args.filter_similar,
