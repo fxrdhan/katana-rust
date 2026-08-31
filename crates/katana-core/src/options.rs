@@ -43,6 +43,8 @@ pub struct Options {
     pub store_response_dir: Option<String>,
     pub custom_fields_config: Option<String>,
     pub fields: Option<Vec<String>>,
+    pub raw_request_file: Option<String>,
+    pub resume_file: Option<String>,
 }
 
 impl Default for Options {
@@ -88,6 +90,8 @@ impl Default for Options {
             store_response_dir: None,
             custom_fields_config: None,
             fields: None,
+            raw_request_file: None,
+            resume_file: None,
         }
     }
 }
