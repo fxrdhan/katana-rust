@@ -25,7 +25,7 @@ async fn main() -> anyhow::Result<()> {
     let mut target_urls = Vec::new();
     if let Some(u) = args.url {
         target_urls.push(u);
-    } else if let Some(list_path) = args.list {
+    } else if let Some(list_path) = &args.list {
         let file = File::open(list_path)?;
         let reader = BufReader::new(file);
         for line in reader.lines() {
@@ -34,6 +34,12 @@ async fn main() -> anyhow::Result<()> {
                 target_urls.push(line_str);
             }
         }
+    } else if let Some(raw_path) = &args.raw_request {
+        let parsed_req = katana_core::parse_raw_request_file(raw_path, true)?;
+        target_urls.push(parsed_req.url);
+    } else if let Some(resume_path) = &args.resume {
+        let cp = katana_core::CrawlCheckpoint::load(resume_path)?;
+        target_urls.extend(cp.in_flight_urls);
     } else {
         // Read from stdin if available
         let stdin = io::stdin();
@@ -47,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if target_urls.is_empty() {
-        eprintln!("Error: No target URLs provided. Use -u <url> or -l <file>");
+        eprintln!("Error: No target URLs provided. Use -u <url>, -l <file>, -r <raw-request>, or pipe via stdin");
         std::process::exit(1);
     }
 
@@ -77,6 +83,8 @@ async fn main() -> anyhow::Result<()> {
         store_response: args.store_response,
         store_response_dir: args.store_response_dir,
         custom_fields_config: args.config,
+        raw_request_file: args.raw_request.clone(),
+        resume_file: args.resume.clone(),
         ..Default::default()
     };
 
