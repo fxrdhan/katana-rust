@@ -72,6 +72,7 @@ async fn main() -> anyhow::Result<()> {
         max_domain_pages: args.max_domain_pages,
         display_out_scope: args.display_out_scope,
         proxy: args.proxy,
+        scan_secrets: args.scan_secrets,
         ..Default::default()
     };
 
