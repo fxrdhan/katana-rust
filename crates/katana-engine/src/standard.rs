@@ -286,6 +286,19 @@ impl Engine for StandardEngine {
                         counter.fetch_add(1, Ordering::Relaxed);
                     }
 
+                    let location_header = resp
+                        .headers()
+                        .get(reqwest::header::LOCATION)
+                        .and_then(|v| v.to_str().ok())
+                        .map(String::from);
+
+                    let content_type = resp
+                        .headers()
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+
                     let headers_map = resp
                         .headers()
                         .iter()
@@ -323,6 +336,24 @@ impl Engine for StandardEngine {
                     let mut discovered =
                         parse_html_endpoints(&current_req.url, &body_text, current_req.depth);
 
+                    // Location response header extraction
+                    if let Some(loc_str) = &location_header {
+                        if let Ok(base_parsed) = Url::parse(&current_req.url) {
+                            if let Ok(resolved) = base_parsed.join(loc_str) {
+                                discovered.push(Request {
+                                    method: "GET".to_string(),
+                                    url: resolved.to_string(),
+                                    depth: current_req.depth + 1,
+                                    tag: "header".to_string(),
+                                    attribute: "location".to_string(),
+                                    root_hostname: root_hostname.clone(),
+                                    source: current_req.url.clone(),
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                    }
+
                     if self.options.scrape_js {
                         let regex_discovered = extract_endpoints_from_regex(
                             &current_req.url,
@@ -330,6 +361,35 @@ impl Engine for StandardEngine {
                             current_req.depth,
                         );
                         discovered.extend(regex_discovered);
+                    }
+
+                    if self.options.scrape_jsluice {
+                        let is_js_file = current_req.url.ends_with(".js")
+                            || current_req.url.ends_with(".css")
+                            || content_type.contains("/javascript");
+
+                        if is_js_file {
+                            if !katana_parser::is_common_js_library(&current_req.url) {
+                                let js_discovered = katana_parser::extract_js_ast_endpoints(
+                                    &current_req.url,
+                                    &body_text,
+                                    current_req.depth,
+                                    "js",
+                                );
+                                discovered.extend(js_discovered);
+                            }
+                        } else {
+                            let inline_scripts = katana_parser::extract_inline_scripts(&body_text);
+                            for script in inline_scripts {
+                                let js_discovered = katana_parser::extract_js_ast_endpoints(
+                                    &current_req.url,
+                                    &script,
+                                    current_req.depth,
+                                    "script",
+                                );
+                                discovered.extend(js_discovered);
+                            }
+                        }
                     }
 
                     // Funnel discovered requests through the 10-step enqueue pipeline
