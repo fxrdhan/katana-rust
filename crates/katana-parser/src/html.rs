@@ -9,6 +9,22 @@ struct ParserContext<'a> {
     current_depth: usize,
 }
 
+/// Extracts the inner text of all `<script>` tags from an HTML document.
+pub fn extract_inline_scripts(html_content: &str) -> Vec<String> {
+    let mut scripts = Vec::new();
+    let document = Html::parse_document(html_content);
+    if let Ok(selector) = Selector::parse("script") {
+        for element in document.select(&selector) {
+            let text: String = element.text().collect();
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                scripts.push(trimmed.to_string());
+            }
+        }
+    }
+    scripts
+}
+
 /// Parses HTML content and extracts potential navigation endpoints.
 pub fn parse_html_endpoints(
     base_url: &str,
