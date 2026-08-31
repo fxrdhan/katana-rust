@@ -37,6 +37,7 @@ pub struct Options {
     pub user_agent: Option<String>,
     pub tls_impersonate: bool,
     pub auth_credentials: Option<String>,
+    pub scan_secrets: bool,
 }
 
 impl Default for Options {
@@ -76,6 +77,7 @@ impl Default for Options {
             user_agent: None,
             tls_impersonate: false,
             auth_credentials: None,
+            scan_secrets: false,
         }
     }
 }
