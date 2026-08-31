@@ -166,3 +166,49 @@ async fn test_e2e_standard_crawler() {
         .iter()
         .any(|s| s.rule_name == "AWS Access Key"));
 }
+
+#[tokio::test]
+async fn test_e2e_custom_fields_and_storage() {
+    let (base_url, server_handle) = start_mock_server().await;
+    let temp_dir = std::env::temp_dir().join(format!("katana_test_{}", std::process::id()));
+
+    let options = Options {
+        urls: vec![base_url.clone()],
+        max_depth: 1,
+        concurrency: 2,
+        timeout: 5,
+        store_response: true,
+        store_response_dir: Some(temp_dir.to_str().unwrap().to_string()),
+        ..Default::default()
+    };
+
+    let engine = StandardEngine::new(options).unwrap();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+
+    let root_url = base_url.clone();
+    let crawl_handle = tokio::spawn(async move {
+        engine.crawl(&root_url, tx).await.unwrap();
+    });
+
+    let mut stored_paths = Vec::new();
+
+    while let Some(res) = rx.recv().await {
+        if let Some(resp) = res.response {
+            if !resp.stored_response_path.is_empty() {
+                stored_paths.push(resp.stored_response_path);
+            }
+        }
+    }
+
+    crawl_handle.await.unwrap();
+    server_handle.abort();
+
+    // Verify response files were created on disk
+    assert!(!stored_paths.is_empty());
+    for p in &stored_paths {
+        assert!(std::path::Path::new(p).exists());
+    }
+
+    // Clean up test directory
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

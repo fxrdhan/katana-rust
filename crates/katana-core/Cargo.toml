@@ -17,3 +17,5 @@ lazy_static = { workspace = true }
 md-5 = { workspace = true }
 dashmap = { workspace = true }
 tracing = { workspace = true }
+serde_yaml = { workspace = true }
+anyhow = { workspace = true }

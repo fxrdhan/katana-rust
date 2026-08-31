@@ -96,6 +96,26 @@ pub struct CliArgs {
     #[arg(long = "proxy")]
     pub proxy: Option<String>,
 
+    /// Output file path (-o)
+    #[arg(short = 'o', long = "output")]
+    pub output: Option<String>,
+
+    /// Store response headers and body to directory (-sr)
+    #[arg(long = "store-response", alias = "sr")]
+    pub store_response: bool,
+
+    /// Directory to store response files (-srd)
+    #[arg(long = "store-response-dir", alias = "srd")]
+    pub store_response_dir: Option<String>,
+
+    /// Custom fields YAML configuration file path (-config)
+    #[arg(long = "config", alias = "custom-fields-config")]
+    pub config: Option<String>,
+
+    /// Custom field names to display (-fields, -fld)
+    #[arg(long = "fields", alias = "fld")]
+    pub fields: Option<String>,
+
     /// Output format as JSONL
     #[arg(long = "jsonl")]
     pub jsonl: bool,

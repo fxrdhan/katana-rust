@@ -14,7 +14,7 @@ use katana_parser::files::{parse_robots_txt, parse_sitemap_xml};
 use katana_parser::{extract_endpoints_from_regex, parse_forms, parse_html_endpoints};
 use katana_similarity::{fingerprint_url, PathTrie};
 use reqwest::Client;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,6 +30,34 @@ pub struct StandardEngine {
     domain_counters: Arc<DashMap<String, AtomicUsize>>,
     path_trie: Arc<PathTrie>,
     backoff: Arc<HostBackoffManager>,
+    custom_fields: Arc<katana_core::CustomFieldManager>,
+}
+
+fn store_response_to_disk(
+    dir: &str,
+    url: &str,
+    status: u16,
+    headers: &HashMap<String, String>,
+    body: &str,
+) -> Option<String> {
+    use sha2::Digest;
+    std::fs::create_dir_all(dir).ok()?;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(url.as_bytes());
+    hasher.update(Utc::now().to_rfc3339().as_bytes());
+    let file_hash = format!("{:x}", hasher.finalize());
+    let filename = format!("{}.txt", &file_hash[..16]);
+    let file_path = format!("{}/{}", dir.trim_end_matches('/'), filename);
+
+    let mut content = format!("HTTP/1.1 {}\r\n", status);
+    for (k, v) in headers {
+        content.push_str(&format!("{}: {}\r\n", k, v));
+    }
+    content.push_str("\r\n");
+    content.push_str(body);
+
+    std::fs::write(&file_path, content).ok()?;
+    Some(file_path)
 }
 
 impl StandardEngine {
@@ -60,6 +88,11 @@ impl StandardEngine {
 
         let path_trie = Arc::new(PathTrie::new(options.filter_similar_threshold));
         let backoff = Arc::new(HostBackoffManager::default());
+        let custom_fields = if let Some(cfg_path) = &options.custom_fields_config {
+            Arc::new(katana_core::CustomFieldManager::from_file(cfg_path).unwrap_or_default())
+        } else {
+            Arc::new(katana_core::CustomFieldManager::new())
+        };
 
         Ok(Self {
             options: Arc::new(options),
@@ -69,6 +102,7 @@ impl StandardEngine {
             domain_counters: Arc::new(DashMap::new()),
             path_trie,
             backoff,
+            custom_fields,
         })
     }
 
@@ -325,6 +359,25 @@ impl Engine for StandardEngine {
                         Vec::new()
                     };
 
+                    let custom_fields = self.custom_fields.extract(&headers_map, &body_text);
+
+                    let stored_path = if self.options.store_response {
+                        let dir = self
+                            .options
+                            .store_response_dir
+                            .as_deref()
+                            .unwrap_or("katana_response");
+                        store_response_to_disk(
+                            dir,
+                            &current_req.url,
+                            status,
+                            &headers_map,
+                            &body_text,
+                        )
+                    } else {
+                        None
+                    };
+
                     let nav_resp = Response {
                         depth: current_req.depth,
                         status_code: status,
@@ -333,14 +386,18 @@ impl Engine for StandardEngine {
                         root_hostname: root_hostname.clone(),
                         forms,
                         body: body_text.clone(),
+                        stored_response_path: stored_path.unwrap_or_default(),
                         api_type: api_type.clone(),
                         secrets: secrets.clone(),
                         ..Default::default()
                     };
 
+                    let mut final_req = current_req.clone();
+                    final_req.custom_fields = custom_fields;
+
                     let crawl_result = CrawlResult {
                         timestamp: Utc::now(),
-                        request: Some(current_req.clone()),
+                        request: Some(final_req),
                         response: Some(nav_resp),
                         api_type,
                         secrets,
