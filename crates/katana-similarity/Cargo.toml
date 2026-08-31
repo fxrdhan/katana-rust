@@ -13,3 +13,10 @@ lazy_static = { workspace = true }
 lru = { workspace = true }
 url = { workspace = true }
 scraper = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "similarity_bench"
+harness = false
