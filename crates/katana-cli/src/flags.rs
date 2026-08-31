@@ -32,6 +32,30 @@ pub struct CliArgs {
     #[arg(short = 'p', long = "delay", default_value_t = 0)]
     pub delay: u64,
 
+    /// Enable headless browser crawling (-hl)
+    #[arg(short = 'H', long = "headless", alias = "hl")]
+    pub headless: bool,
+
+    /// Enable headless hybrid crawling (-hb, --hybrid)
+    #[arg(long = "headless-hybrid", alias = "hb", visible_alias = "hybrid")]
+    pub headless_hybrid: bool,
+
+    /// Use system installed chrome browser
+    #[arg(long = "system-chrome")]
+    pub system_chrome: bool,
+
+    /// Chrome DevTools Protocol websocket URL
+    #[arg(long = "chrome-ws-url")]
+    pub chrome_ws_url: Option<String>,
+
+    /// Chrome data directory for browser profile storage
+    #[arg(long = "chrome-data-dir")]
+    pub chrome_data_dir: Option<String>,
+
+    /// Automatically fill and submit HTML forms (-aff)
+    #[arg(long = "automatic-form-fill", alias = "aff")]
+    pub automatic_form_fill: bool,
+
     /// Scrape JavaScript endpoints using regular expressions
     #[arg(short = 'j', long = "js-crawl")]
     pub js_crawl: bool,
