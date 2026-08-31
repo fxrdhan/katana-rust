@@ -36,14 +36,31 @@ impl OutputWriter {
                 "[DISCOVERED]".cyan()
             };
 
+            let api_str = if let Some(api) = &res.api_type {
+                format!(" [{}]", api.blue())
+            } else {
+                String::new()
+            };
+
             println!(
-                "{} [{}] [{}] {} [depth:{}]",
+                "{} [{}] [{}] {}{}",
                 status_str,
                 tag.magenta(),
                 method.yellow(),
                 req.url,
-                req.depth
+                api_str
             );
+
+            // Highlight detected secrets in interactive mode
+            for secret in &res.secrets {
+                println!(
+                    "  {} [{}] {} in {}",
+                    "[SECRET DETECTED]".bold().red(),
+                    secret.severity.to_uppercase().yellow(),
+                    format!("{}: {}", secret.rule_name, secret.matched_token).bright_white(),
+                    secret.source.dimmed()
+                );
+            }
         }
     }
 }

@@ -56,6 +56,10 @@ pub struct CliArgs {
     #[arg(long = "automatic-form-fill", alias = "aff")]
     pub automatic_form_fill: bool,
 
+    /// Scan response bodies for exposed credentials and secrets (-secrets)
+    #[arg(long = "scan-secrets", alias = "secrets")]
+    pub scan_secrets: bool,
+
     /// Scrape JavaScript endpoints using regular expressions
     #[arg(short = 'j', long = "js-crawl")]
     pub js_crawl: bool,

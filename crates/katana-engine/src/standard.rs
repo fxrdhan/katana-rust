@@ -110,8 +110,8 @@ impl StandardEngine {
                 let depth_err = CrawlResult {
                     timestamp: Utc::now(),
                     request: Some(nr.clone()),
-                    response: None,
                     error: KatanaError::MaxDepthReached.to_string(),
+                    ..Default::default()
                 };
                 let _ = sender.send(depth_err);
                 continue;
@@ -144,8 +144,8 @@ impl StandardEngine {
                     let out_scope_res = CrawlResult {
                         timestamp: Utc::now(),
                         request: Some(nr.clone()),
-                        response: None,
                         error: KatanaError::OutOfScope.to_string(),
+                        ..Default::default()
                     };
                     let _ = sender.send(out_scope_res);
                 }
@@ -312,6 +312,19 @@ impl Engine for StandardEngine {
                         Vec::new()
                     };
 
+                    let api_type = katana_core::knowledge::classify_api_endpoint(
+                        &current_req.url,
+                        &content_type,
+                        &body_text,
+                    )
+                    .map(|t| t.to_string());
+
+                    let secrets = if self.options.scan_secrets {
+                        katana_core::knowledge::SecretScanner::scan(&body_text, &current_req.url)
+                    } else {
+                        Vec::new()
+                    };
+
                     let nav_resp = Response {
                         depth: current_req.depth,
                         status_code: status,
@@ -320,6 +333,8 @@ impl Engine for StandardEngine {
                         root_hostname: root_hostname.clone(),
                         forms,
                         body: body_text.clone(),
+                        api_type: api_type.clone(),
+                        secrets: secrets.clone(),
                         ..Default::default()
                     };
 
@@ -327,6 +342,8 @@ impl Engine for StandardEngine {
                         timestamp: Utc::now(),
                         request: Some(current_req.clone()),
                         response: Some(nav_resp),
+                        api_type,
+                        secrets,
                         error: String::new(),
                     };
 
@@ -400,8 +417,8 @@ impl Engine for StandardEngine {
                     let err_result = CrawlResult {
                         timestamp: Utc::now(),
                         request: Some(current_req),
-                        response: None,
                         error: err.to_string(),
+                        ..Default::default()
                     };
                     let _ = sender.send(err_result);
                 }
