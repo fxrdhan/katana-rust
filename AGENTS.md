@@ -31,7 +31,7 @@ Before staging or committing any code changes:
 
 ## 3. Architecture & Parity Ground Truth
 
-- **Authoritative Blueprint**: Always consult [KATANA_ARCHITECTURE_CORPUS.md](./KATANA_ARCHITECTURE_CORPUS.md) when implementing or refining algorithms (e.g. 3-layer deduplication, adaptive PathTrie promotion, Enqueue validation order, scope manager).
+- **Authoritative Blueprint**: Always consult [ARCHITECTURE.md](./ARCHITECTURE.md) when implementing or refining algorithms (e.g. 3-layer deduplication, adaptive PathTrie promotion, Enqueue validation order, scope manager).
 - **Upstream Reference**: The Go reference repository is located at `../katana-go` (`https://github.com/projectdiscovery/katana.git`). Use it for cross-verification, behavioral comparisons, and golden-vector testing.
 
 ---

@@ -1,17 +1,24 @@
+use crate::backoff::HostBackoffManager;
 use crate::traits::Engine;
 use async_trait::async_trait;
 use chrono::Utc;
-use dashmap::DashSet;
+use dashmap::{DashMap, DashSet};
+use katana_core::error::KatanaError;
+use katana_core::filters::{
+    extract_parent_paths, is_cycle, is_logout_url, replace_all_query_param,
+};
 use katana_core::navigation::{Request, Response, Result as CrawlResult};
 use katana_core::options::Options;
 use katana_core::scope::ScopeManager;
+use katana_parser::files::{parse_robots_txt, parse_sitemap_xml};
 use katana_parser::{extract_endpoints_from_regex, parse_forms, parse_html_endpoints};
-use katana_similarity::fingerprint_url;
+use katana_similarity::{fingerprint_url, PathTrie};
 use reqwest::Client;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 use tracing::{debug, error, info};
 use url::Url;
 
@@ -20,6 +27,37 @@ pub struct StandardEngine {
     client: Client,
     scope: Arc<ScopeManager>,
     visited_urls: Arc<DashSet<String>>,
+    domain_counters: Arc<DashMap<String, AtomicUsize>>,
+    path_trie: Arc<PathTrie>,
+    backoff: Arc<HostBackoffManager>,
+    custom_fields: Arc<katana_core::CustomFieldManager>,
+}
+
+fn store_response_to_disk(
+    dir: &str,
+    url: &str,
+    status: u16,
+    headers: &HashMap<String, String>,
+    body: &str,
+) -> Option<String> {
+    use sha2::Digest;
+    std::fs::create_dir_all(dir).ok()?;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(url.as_bytes());
+    hasher.update(Utc::now().to_rfc3339().as_bytes());
+    let file_hash = format!("{:x}", hasher.finalize());
+    let filename = format!("{}.txt", &file_hash[..16]);
+    let file_path = format!("{}/{}", dir.trim_end_matches('/'), filename);
+
+    let mut content = format!("HTTP/1.1 {}\r\n", status);
+    for (k, v) in headers {
+        content.push_str(&format!("{}: {}\r\n", k, v));
+    }
+    content.push_str("\r\n");
+    content.push_str(body);
+
+    std::fs::write(&file_path, content).ok()?;
+    Some(file_path)
 }
 
 impl StandardEngine {
@@ -32,15 +70,184 @@ impl StandardEngine {
             client_builder = client_builder.redirect(reqwest::redirect::Policy::none());
         }
 
+        if let Some(proxy_url) = &options.proxy {
+            client_builder = client_builder.proxy(reqwest::Proxy::all(proxy_url)?);
+        }
+
+        if let Some(ua) = &options.user_agent {
+            client_builder = client_builder.user_agent(ua);
+        }
+
         let client = client_builder.build()?;
-        let scope = Arc::new(ScopeManager::new(&options.scope, &options.out_of_scope)?);
+        let scope = Arc::new(ScopeManager::new(
+            &options.scope,
+            &options.out_of_scope,
+            "rdn",
+            false,
+        )?);
+
+        let path_trie = Arc::new(PathTrie::new(options.filter_similar_threshold));
+        let backoff = Arc::new(HostBackoffManager::default());
+        let custom_fields = if let Some(cfg_path) = &options.custom_fields_config {
+            Arc::new(katana_core::CustomFieldManager::from_file(cfg_path).unwrap_or_default())
+        } else {
+            Arc::new(katana_core::CustomFieldManager::new())
+        };
 
         Ok(Self {
             options: Arc::new(options),
             client,
             scope,
             visited_urls: Arc::new(DashSet::new()),
+            domain_counters: Arc::new(DashMap::new()),
+            path_trie,
+            backoff,
+            custom_fields,
         })
+    }
+
+    /// Complete 10-step enqueue validation funnel matching Katana Go architecture.
+    pub fn enqueue(
+        &self,
+        queue: &mut VecDeque<Request>,
+        requests: Vec<Request>,
+        sender: &mpsc::UnboundedSender<CrawlResult>,
+    ) {
+        for nr in requests {
+            // 1. URL Sanity
+            if nr.url.is_empty() {
+                continue;
+            }
+            if Url::parse(&nr.url).is_err() {
+                continue;
+            }
+
+            // 2. Query parameter handling (-iqp)
+            let mut req_url = nr.request_url();
+            if self.options.ignore_query_params {
+                req_url = replace_all_query_param(&req_url, "");
+            }
+
+            // 3. Structural fingerprinting (-filter-similar)
+            if self.options.filter_similar {
+                req_url = fingerprint_url(&req_url, Some(&self.path_trie));
+            }
+
+            // 4. Logout guard
+            if self.options.auth_credentials.is_some() && is_logout_url(&nr.url) {
+                debug!("Skipping logout URL: {}", nr.url);
+                continue;
+            }
+
+            // 5. Depth ceiling (emit without consuming uniqueness)
+            if nr.depth > self.options.max_depth {
+                let depth_err = CrawlResult {
+                    timestamp: Utc::now(),
+                    request: Some(nr.clone()),
+                    error: KatanaError::MaxDepthReached.to_string(),
+                    ..Default::default()
+                };
+                let _ = sender.send(depth_err);
+                continue;
+            }
+
+            // 6. Per-domain page quota (-mdp)
+            if self.options.max_domain_pages > 0 && !nr.root_hostname.is_empty() {
+                if let Some(counter) = self.domain_counters.get(&nr.root_hostname) {
+                    if counter.load(Ordering::Relaxed) >= self.options.max_domain_pages {
+                        continue;
+                    }
+                }
+            }
+
+            // 7. Uniqueness check
+            if !self.visited_urls.insert(req_url.clone()) && nr.custom_fields.is_empty() {
+                continue;
+            }
+
+            // 8. Cycle detection
+            if is_cycle(&nr.url) {
+                debug!("Cycle detected, dropping: {}", nr.url);
+                continue;
+            }
+
+            // 9. Scope validation
+            let in_scope = self.scope.validate(&nr.url, &nr.root_hostname);
+            if !in_scope && !nr.skip_validation {
+                if self.options.display_out_scope {
+                    let out_scope_res = CrawlResult {
+                        timestamp: Utc::now(),
+                        request: Some(nr.clone()),
+                        error: KatanaError::OutOfScope.to_string(),
+                        ..Default::default()
+                    };
+                    let _ = sender.send(out_scope_res);
+                }
+                continue;
+            }
+
+            // 10. Push & Path-climbing (-pc)
+            queue.push_back(nr.clone());
+
+            if self.options.path_climb {
+                let parent_urls = extract_parent_paths(&nr.url);
+                for parent_url in parent_urls {
+                    let mut check_url = parent_url.clone();
+                    if self.options.filter_similar {
+                        check_url = fingerprint_url(&check_url, Some(&self.path_trie));
+                    }
+                    if !self.visited_urls.insert(check_url) {
+                        continue;
+                    }
+                    if !self.scope.validate(&parent_url, &nr.root_hostname) {
+                        continue;
+                    }
+
+                    let parent_depth = nr.depth.saturating_sub(1);
+                    queue.push_back(Request {
+                        method: nr.method.clone(),
+                        url: parent_url,
+                        depth: parent_depth,
+                        root_hostname: nr.root_hostname.clone(),
+                        source: nr.source.clone(),
+                        tag: "path-climb".to_string(),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+    }
+
+    /// Seed known files (robots.txt and sitemap.xml) if configured.
+    async fn seed_known_files(
+        &self,
+        root_url: &str,
+        queue: &mut VecDeque<Request>,
+        sender: &mpsc::UnboundedSender<CrawlResult>,
+    ) {
+        let base_trimmed = root_url.trim_end_matches('/');
+
+        // Fetch robots.txt
+        let robots_url = format!("{}/robots.txt", base_trimmed);
+        if let Ok(resp) = self.client.get(&robots_url).send().await {
+            if resp.status().is_success() {
+                if let Ok(content) = resp.text().await {
+                    let discovered = parse_robots_txt(&robots_url, &content);
+                    self.enqueue(queue, discovered, sender);
+                }
+            }
+        }
+
+        // Fetch sitemap.xml
+        let sitemap_url = format!("{}/sitemap.xml", base_trimmed);
+        if let Ok(resp) = self.client.get(&sitemap_url).send().await {
+            if resp.status().is_success() {
+                if let Ok(content) = resp.text().await {
+                    let discovered = parse_sitemap_xml(&sitemap_url, &content);
+                    self.enqueue(queue, discovered, sender);
+                }
+            }
+        }
     }
 }
 
@@ -60,18 +267,33 @@ impl Engine for StandardEngine {
             url: root_url.to_string(),
             depth: 0,
             root_hostname: root_hostname.clone(),
+            skip_validation: true,
             ..Default::default()
         };
 
-        queue.push_back(initial_req);
-        self.visited_urls.insert(root_url.to_string());
+        self.enqueue(&mut queue, vec![initial_req], &sender);
+        self.seed_known_files(root_url, &mut queue, &sender).await;
 
         info!("Starting Standard crawl for root: {}", root_url);
 
+        let concurrency = self.options.concurrency.max(1);
+        let _semaphore = Arc::new(Semaphore::new(concurrency));
+
         while let Some(current_req) = queue.pop_front() {
-            if current_req.depth > self.options.max_depth {
-                debug!("Skipping {} - max depth exceeded", current_req.url);
-                continue;
+            let host = Url::parse(&current_req.url)
+                .ok()
+                .and_then(|u| u.host_str().map(String::from))
+                .unwrap_or_default();
+
+            // Apply adaptive backoff if host is throttled
+            if let Some(backoff_delay) = self.backoff.get_backoff_delay(&host) {
+                debug!("Applying backoff of {:?} to host {}", backoff_delay, host);
+                tokio::time::sleep(backoff_delay).await;
+            }
+
+            // Fixed delay if requested
+            if self.options.delay > 0 {
+                tokio::time::sleep(Duration::from_secs(self.options.delay)).await;
             }
 
             debug!("Fetching [{}] depth={}", current_req.url, current_req.depth);
@@ -81,6 +303,36 @@ impl Engine for StandardEngine {
             match fetch_res {
                 Ok(resp) => {
                     let status = resp.status().as_u16();
+
+                    // Record throttle or success state
+                    if HostBackoffManager::is_throttled(status) {
+                        self.backoff.record_throttle(&host);
+                    } else {
+                        self.backoff.record_success(&host);
+                    }
+
+                    // Increment domain page counter
+                    if !current_req.root_hostname.is_empty() {
+                        let counter = self
+                            .domain_counters
+                            .entry(current_req.root_hostname.clone())
+                            .or_insert_with(|| AtomicUsize::new(0));
+                        counter.fetch_add(1, Ordering::Relaxed);
+                    }
+
+                    let location_header = resp
+                        .headers()
+                        .get(reqwest::header::LOCATION)
+                        .and_then(|v| v.to_str().ok())
+                        .map(String::from);
+
+                    let content_type = resp
+                        .headers()
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+
                     let headers_map = resp
                         .headers()
                         .iter()
@@ -94,6 +346,38 @@ impl Engine for StandardEngine {
                         Vec::new()
                     };
 
+                    let api_type = katana_core::knowledge::classify_api_endpoint(
+                        &current_req.url,
+                        &content_type,
+                        &body_text,
+                    )
+                    .map(|t| t.to_string());
+
+                    let secrets = if self.options.scan_secrets {
+                        katana_core::knowledge::SecretScanner::scan(&body_text, &current_req.url)
+                    } else {
+                        Vec::new()
+                    };
+
+                    let custom_fields = self.custom_fields.extract(&headers_map, &body_text);
+
+                    let stored_path = if self.options.store_response {
+                        let dir = self
+                            .options
+                            .store_response_dir
+                            .as_deref()
+                            .unwrap_or("katana_response");
+                        store_response_to_disk(
+                            dir,
+                            &current_req.url,
+                            status,
+                            &headers_map,
+                            &body_text,
+                        )
+                    } else {
+                        None
+                    };
+
                     let nav_resp = Response {
                         depth: current_req.depth,
                         status_code: status,
@@ -102,13 +386,21 @@ impl Engine for StandardEngine {
                         root_hostname: root_hostname.clone(),
                         forms,
                         body: body_text.clone(),
+                        stored_response_path: stored_path.unwrap_or_default(),
+                        api_type: api_type.clone(),
+                        secrets: secrets.clone(),
                         ..Default::default()
                     };
 
+                    let mut final_req = current_req.clone();
+                    final_req.custom_fields = custom_fields;
+
                     let crawl_result = CrawlResult {
                         timestamp: Utc::now(),
-                        request: Some(current_req.clone()),
+                        request: Some(final_req),
                         response: Some(nav_resp),
+                        api_type,
+                        secrets,
                         error: String::new(),
                     };
 
@@ -117,6 +409,24 @@ impl Engine for StandardEngine {
                     // Discover new links
                     let mut discovered =
                         parse_html_endpoints(&current_req.url, &body_text, current_req.depth);
+
+                    // Location response header extraction
+                    if let Some(loc_str) = &location_header {
+                        if let Ok(base_parsed) = Url::parse(&current_req.url) {
+                            if let Ok(resolved) = base_parsed.join(loc_str) {
+                                discovered.push(Request {
+                                    method: "GET".to_string(),
+                                    url: resolved.to_string(),
+                                    depth: current_req.depth + 1,
+                                    tag: "header".to_string(),
+                                    attribute: "location".to_string(),
+                                    root_hostname: root_hostname.clone(),
+                                    source: current_req.url.clone(),
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                    }
 
                     if self.options.scrape_js {
                         let regex_discovered = extract_endpoints_from_regex(
@@ -127,30 +437,45 @@ impl Engine for StandardEngine {
                         discovered.extend(regex_discovered);
                     }
 
-                    for mut next_req in discovered {
-                        let dedup_key = if self.options.filter_similar {
-                            fingerprint_url(&next_req.url, None)
+                    if self.options.scrape_jsluice {
+                        let is_js_file = current_req.url.ends_with(".js")
+                            || current_req.url.ends_with(".css")
+                            || content_type.contains("/javascript");
+
+                        if is_js_file {
+                            if !katana_parser::is_common_js_library(&current_req.url) {
+                                let js_discovered = katana_parser::extract_js_ast_endpoints(
+                                    &current_req.url,
+                                    &body_text,
+                                    current_req.depth,
+                                    "js",
+                                );
+                                discovered.extend(js_discovered);
+                            }
                         } else {
-                            next_req.request_url()
-                        };
-
-                        if !self.visited_urls.contains(&dedup_key) {
-                            self.visited_urls.insert(dedup_key);
-
-                            if self.scope.validate(&next_req.url, &root_hostname) {
-                                next_req.root_hostname = root_hostname.clone();
-                                queue.push_back(next_req);
+                            let inline_scripts = katana_parser::extract_inline_scripts(&body_text);
+                            for script in inline_scripts {
+                                let js_discovered = katana_parser::extract_js_ast_endpoints(
+                                    &current_req.url,
+                                    &script,
+                                    current_req.depth,
+                                    "script",
+                                );
+                                discovered.extend(js_discovered);
                             }
                         }
                     }
+
+                    // Funnel discovered requests through the 10-step enqueue pipeline
+                    self.enqueue(&mut queue, discovered, &sender);
                 }
                 Err(err) => {
                     error!("Error fetching {}: {}", current_req.url, err);
                     let err_result = CrawlResult {
                         timestamp: Utc::now(),
                         request: Some(current_req),
-                        response: None,
                         error: err.to_string(),
+                        ..Default::default()
                     };
                     let _ = sender.send(err_result);
                 }

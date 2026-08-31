@@ -20,3 +20,10 @@ dashmap = { workspace = true }
 md-5 = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+lru = { workspace = true }
+lazy_static = { workspace = true }
+regex = { workspace = true }
+sha2 = { workspace = true }
+which = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

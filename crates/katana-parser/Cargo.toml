@@ -12,3 +12,10 @@ scraper = { workspace = true }
 regex = { workspace = true }
 lazy_static = { workspace = true }
 url = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "parser_bench"
+harness = false

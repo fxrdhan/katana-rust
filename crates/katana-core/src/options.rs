@@ -37,6 +37,14 @@ pub struct Options {
     pub user_agent: Option<String>,
     pub tls_impersonate: bool,
     pub auth_credentials: Option<String>,
+    pub scan_secrets: bool,
+    pub output_file: Option<String>,
+    pub store_response: bool,
+    pub store_response_dir: Option<String>,
+    pub custom_fields_config: Option<String>,
+    pub fields: Option<Vec<String>>,
+    pub raw_request_file: Option<String>,
+    pub resume_file: Option<String>,
 }
 
 impl Default for Options {
@@ -76,6 +84,14 @@ impl Default for Options {
             user_agent: None,
             tls_impersonate: false,
             auth_credentials: None,
+            scan_secrets: false,
+            output_file: None,
+            store_response: false,
+            store_response_dir: None,
+            custom_fields_config: None,
+            fields: None,
+            raw_request_file: None,
+            resume_file: None,
         }
     }
 }

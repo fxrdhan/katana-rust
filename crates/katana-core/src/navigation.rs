@@ -1,3 +1,4 @@
+use crate::knowledge::SecretFinding;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -100,6 +101,12 @@ pub struct Response {
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub stored_response_path: String,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_type: Option<String>,
+
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub secrets: Vec<SecretFinding>,
+
     #[serde(skip_serializing_if = "HashMap::is_empty", default)]
     pub knowledgebase: HashMap<String, serde_json::Value>,
 }
@@ -122,13 +129,17 @@ impl Response {
 }
 
 /// Final crawl result emitted to consumers / output writers.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Result {
     pub timestamp: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request: Option<Request>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response: Option<Response>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_type: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub secrets: Vec<SecretFinding>,
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub error: String,
 }
