@@ -4,10 +4,11 @@ mod output;
 use clap::Parser;
 use flags::CliArgs;
 use katana_core::options::Options;
-use katana_engine::{Engine, StandardEngine};
+use katana_engine::{Engine, HeadlessEngine, HybridEngine, StandardEngine};
 use output::OutputWriter;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -56,6 +57,12 @@ async fn main() -> anyhow::Result<()> {
         concurrency: args.concurrency,
         timeout: args.timeout,
         delay: args.delay,
+        headless: args.headless,
+        headless_hybrid: args.headless_hybrid,
+        system_chrome: args.system_chrome,
+        chrome_ws_url: args.chrome_ws_url,
+        chrome_data_dir: args.chrome_data_dir,
+        automatic_form_fill: args.automatic_form_fill,
         scrape_js: args.js_crawl,
         scrape_jsluice: args.jsluice,
         form_extraction: args.form_extraction,
@@ -68,9 +75,15 @@ async fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
 
-    let engine = StandardEngine::new(options)?;
-    let writer = OutputWriter::new(args.jsonl);
+    let engine: Arc<dyn Engine> = if options.headless_hybrid {
+        Arc::new(HybridEngine::new(options)?)
+    } else if options.headless {
+        Arc::new(HeadlessEngine::new(options)?)
+    } else {
+        Arc::new(StandardEngine::new(options)?)
+    };
 
+    let writer = OutputWriter::new(args.jsonl);
     let (tx, mut rx) = mpsc::unbounded_channel();
 
     // Spawn output processor
