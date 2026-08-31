@@ -14,10 +14,14 @@ All original crawling methodologies, heuristic pipelines, and architectural conc
 
 * **Standard HTTP Engine**: Asynchronous non-blocking HTTP crawling via `reqwest` & `tokio` with 10-step `enqueue()` validation funnel, adaptive host backoff, and cycle detection.
 * **JSLuice Semantic AST Parser**: High-accuracy JavaScript AST parsing for extracting API endpoints (`fetch`, `axios`, `$.ajax`, `open`, `WebSocket`), object properties, and template literals while filtering 100+ standard vendor libraries.
-* **Headless & Hybrid Browser Engines**: State-Graph navigation with DOM normalization/stripping, SimHash tolerance comparison ($\le 2$), and browser profile management.
+* **Headless & Hybrid Browser Engines**: State-Graph navigation with DOM normalization/stripping, SimHash tolerance comparison ($\le 2$), anti-bot stealth injection, and automated form filling (`-aff`).
 * **3-Layer Deduplication**: Structural URL fingerprinting, adaptive 2-tier promotion `PathTrie` (with LRU host eviction), and 64-bit Charikar SimHash (FNV-1a).
-* **Knowledge Base & Secret Scanner**: Automated API paradigm classification (REST, GraphQL, SOAP, WebSocket, XHR) and regular expression secret detection scanner for exposed credentials (AWS, GitHub, Google, Slack, Stripe, JWT).
-* **Cross-Platform**: First-class support for Linux, macOS, and Windows with comprehensive automated CI test coverage.
+* **Intelligence & Secret Scanner**: Automated API paradigm classification (REST, GraphQL, SOAP, WebSocket, XHR) and regular expression secret detection scanner for exposed credentials (AWS, GitHub, Google, Slack, Stripe, JWT).
+* **Custom Field Extraction (YAML DSL)**: Extract specific fields from response headers, bodies, or combined payloads using regex capture groups.
+* **Response Disk Storage & File Streaming**: Save raw HTTP responses to disk (`-sr`) and stream discovered endpoints directly to files (`-o`).
+* **Raw Request & Resume Checkpointing**: Seed crawling directly from RFC 7230 raw HTTP request files (`-r`) and pause/resume large crawl jobs via JSON checkpoints (`-resume`).
+* **CAPTCHA Detection & Solver Framework**: Automatic identification of reCAPTCHA v2/v3/Enterprise, Cloudflare Turnstile, and hCaptcha with automated DOM token injection scripts.
+* **Cross-Platform & Release Automation**: Automated multi-platform compilation matrix covering Linux (GNU/musl), macOS (Apple Silicon / Intel), and Windows.
 
 ---
 
@@ -27,10 +31,10 @@ All original crawling methodologies, heuristic pipelines, and architectural conc
 katana-rust/
 ├── ARCHITECTURE.md                # Authoritative architecture specification & ground truth
 ├── crates/
-│   ├── katana-core/               # Request/Response models, ScopeManager, Filters, Knowledge Base & Secret Scanner
+│   ├── katana-core/               # Primitives, ScopeManager, Filters, Knowledge Base, Custom Fields, Raw HTTP & Resume
 │   ├── katana-similarity/         # 3-Layer Deduplication: SimHash 64-bit, Adaptive PathTrie, URL Fingerprinting
 │   ├── katana-parser/             # HTML/DOM selector parsers, JS regex scrapers, JSLuice AST, Form extractors
-│   ├── katana-engine/             # Standard HTTP engine, Headless & Hybrid browser engines, HostBackoffManager
+│   ├── katana-engine/             # Standard HTTP engine, Headless & Hybrid browser engines, Browser Launcher & Captcha
 │   └── katana-cli/                # Main CLI binary, command-line flags (clap), OutputWriter, and E2E harness
 ```
 
@@ -38,7 +42,7 @@ For the comprehensive technical specification, refer to [ARCHITECTURE.md](./ARCH
 
 ---
 
-## Feature Parity Matrix
+## Feature Parity Matrix (100% Complete)
 
 | Feature Category | Capability / Flag | Status in Katana-Rust |
 |---|---|:---:|
@@ -46,6 +50,9 @@ For the comprehensive technical specification, refer to [ARCHITECTURE.md](./ARCH
 | | Headless Engine (`-hl`) | Supported |
 | | Hybrid Engine (`-hb`, `--hybrid`) | Supported |
 | | Adaptive Host Backoff (429/503) | Supported |
+| | Browser Process Launcher & Discovery | Supported |
+| | Anti-Bot Stealth Injection | Supported |
+| | Form Auto-Fill Simulation (`-aff`) | Supported |
 | **Parsing & Scraping** | HTML/DOM Link Extraction | Supported |
 | | JavaScript Regex Scraping (`-jc`) | Supported |
 | | JSLuice Semantic AST (`-jsl`) | Supported |
@@ -63,6 +70,15 @@ For the comprehensive technical specification, refer to [ARCHITECTURE.md](./ARCH
 | | Cycle & Logout Detection | Supported |
 | **Intelligence** | API Protocol Classifier | Supported |
 | | Secret & Token Scanner (`--scan-secrets`) | Supported |
+| **Custom Fields & Storage**| YAML Custom Field Extractor (`-config`, `-fields`) | Supported |
+| | Output File Streaming (`-o`) | Supported |
+| | Response Disk Storage (`-sr`, `-srd`) | Supported |
+| **Input & State** | Stdin Asynchronous Pipe Streaming | Supported |
+| | Raw HTTP Request Parsing (`-r`) | Supported |
+| | Checkpoint State Resume (`-resume`) | Supported |
+| **CAPTCHA** | Identification (reCAPTCHA, Turnstile, hCaptcha) | Supported |
+| | Automated DOM Token Injection | Supported |
+| | Capsolver Provider Framework | Supported |
 
 ---
 
@@ -87,49 +103,40 @@ The compiled binary will be located at `target/release/katana`.
 
 ### Basic Crawl
 ```bash
-./target/release/katana -u https://example.com
+katana -u https://example.com
 ```
 
 ### Crawl with JSLuice AST Analysis & Form Extraction
 ```bash
-./target/release/katana -u https://example.com -jsl -f
+katana -u https://example.com -jsl -f
 ```
 
-### Crawl with Secret Detection & JSONL Output
+### Stdin Pipeline Streaming
 ```bash
-./target/release/katana -u https://example.com --scan-secrets --jsonl
+cat urls.txt | katana -c 20 -d 3 -o discovered_urls.txt
 ```
 
-### Headless Hybrid Crawling
+### Crawl from Raw HTTP Request File
 ```bash
-./target/release/katana -u https://example.com --headless-hybrid -d 3 -c 20
+katana -r burp_request.txt -jsl --scan-secrets
 ```
 
-### Structural Deduplication & Path Climbing
+### Headless Crawl with Form Auto-Fill
 ```bash
-./target/release/katana -u https://example.com --filter-similar -pc -iqp
+katana -u https://example.com -hl -aff --show-browser
+```
+
+### Store HTTP Responses & Custom Field Extraction
+```bash
+katana -u https://example.com -config fields.yaml -fields email,phone -sr -srd responses/
 ```
 
 ---
 
-## Benchmarks & Testing
+## Performance Benchmarking
 
-### Running Tests
-```bash
-# Run all unit and integration tests across the workspace
-cargo test --workspace
+Benchmark suites are implemented using Criterion (`katana-similarity` and `katana-parser`).
 
-# Run end-to-end integration tests
-cargo test --test e2e_crawler
-```
-
-### Running Performance Benchmarks
 ```bash
 cargo bench --workspace
 ```
-
----
-
-## License
-
-Licensed under the [MIT License](./LICENSE.md).
