@@ -20,3 +20,4 @@ dashmap = { workspace = true }
 md-5 = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+lru = { workspace = true }

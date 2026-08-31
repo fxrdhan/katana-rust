@@ -28,6 +28,10 @@ pub struct CliArgs {
     #[arg(short = 't', long = "timeout", default_value_t = 10)]
     pub timeout: u64,
 
+    /// Request delay between requests in seconds
+    #[arg(short = 'p', long = "delay", default_value_t = 0)]
+    pub delay: u64,
+
     /// Scrape JavaScript endpoints using regular expressions
     #[arg(short = 'j', long = "js-crawl")]
     pub js_crawl: bool,
@@ -36,9 +40,29 @@ pub struct CliArgs {
     #[arg(short = 'f', long = "form-extraction")]
     pub form_extraction: bool,
 
+    /// Ignore query parameter values (-iqp)
+    #[arg(long = "ignore-query-params", alias = "iqp")]
+    pub ignore_query_params: bool,
+
     /// Deduplicate similar URLs via structural fingerprinting
     #[arg(long = "filter-similar")]
     pub filter_similar: bool,
+
+    /// Crawl parent directory paths (-pc)
+    #[arg(long = "path-climb", alias = "pc")]
+    pub path_climb: bool,
+
+    /// Maximum pages to crawl per domain (-mdp)
+    #[arg(long = "max-domain-pages", alias = "mdp", default_value_t = 0)]
+    pub max_domain_pages: usize,
+
+    /// Display out-of-scope endpoints in output (-do)
+    #[arg(long = "display-out-scope", alias = "do")]
+    pub display_out_scope: bool,
+
+    /// HTTP Proxy URL
+    #[arg(long = "proxy")]
+    pub proxy: Option<String>,
 
     /// Output format as JSONL
     #[arg(long = "jsonl")]
