@@ -178,6 +178,15 @@ impl Engine for HeadlessEngine {
                         Vec::new()
                     };
 
+                    if let Some(captcha_info) =
+                        crate::captcha::detect_captcha_in_html(&body_text, &current_req.url)
+                    {
+                        info!(
+                            "CAPTCHA challenge identified on {}: provider={} sitekey={}",
+                            current_req.url, captcha_info.provider, captcha_info.sitekey
+                        );
+                    }
+
                     let nav_resp = Response {
                         depth: current_req.depth,
                         status_code: status,
