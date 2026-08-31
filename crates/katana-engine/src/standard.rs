@@ -33,7 +33,12 @@ impl StandardEngine {
         }
 
         let client = client_builder.build()?;
-        let scope = Arc::new(ScopeManager::new(&options.scope, &options.out_of_scope)?);
+        let scope = Arc::new(ScopeManager::new(
+            &options.scope,
+            &options.out_of_scope,
+            "rdn",
+            false,
+        )?);
 
         Ok(Self {
             options: Arc::new(options),
