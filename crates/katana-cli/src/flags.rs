@@ -36,6 +36,10 @@ pub struct CliArgs {
     #[arg(short = 'j', long = "js-crawl")]
     pub js_crawl: bool,
 
+    /// Scrape JavaScript endpoints using JSLuice AST analysis (-jsl)
+    #[arg(long = "jsluice", alias = "jsl")]
+    pub jsluice: bool,
+
     /// Extract HTML forms
     #[arg(short = 'f', long = "form-extraction")]
     pub form_extraction: bool,
