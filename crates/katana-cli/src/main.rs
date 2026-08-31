@@ -55,9 +55,15 @@ async fn main() -> anyhow::Result<()> {
         max_depth: args.depth,
         concurrency: args.concurrency,
         timeout: args.timeout,
+        delay: args.delay,
         scrape_js: args.js_crawl,
         form_extraction: args.form_extraction,
+        ignore_query_params: args.ignore_query_params,
         filter_similar: args.filter_similar,
+        path_climb: args.path_climb,
+        max_domain_pages: args.max_domain_pages,
+        display_out_scope: args.display_out_scope,
+        proxy: args.proxy,
         ..Default::default()
     };
 
