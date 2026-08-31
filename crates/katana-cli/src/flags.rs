@@ -16,6 +16,14 @@ pub struct CliArgs {
     #[arg(short = 'l', long = "list")]
     pub list: Option<String>,
 
+    /// Raw HTTP request file path (-r, -request)
+    #[arg(short = 'r', long = "raw-request", alias = "request")]
+    pub raw_request: Option<String>,
+
+    /// Resume scan from state stored in checkpoint file (-resume)
+    #[arg(long = "resume")]
+    pub resume: Option<String>,
+
     /// Maximum crawl depth
     #[arg(short = 'd', long = "depth", default_value_t = 3)]
     pub depth: usize,

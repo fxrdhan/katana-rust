@@ -249,3 +249,34 @@ async fn test_e2e_headless_form_fill() {
     crawl_handle.await.unwrap();
     server_handle.abort();
 }
+
+#[tokio::test]
+async fn test_e2e_raw_request_and_checkpoint() {
+    let (base_url, server_handle) = start_mock_server().await;
+    let url_parsed = url::Url::parse(&base_url).unwrap();
+    let host = url_parsed.host_str().unwrap();
+    let port = url_parsed.port().unwrap();
+
+    let raw_http = format!(
+        "GET /about HTTP/1.1\r\nHost: {}:{}\r\nUser-Agent: Katana-Test\r\n\r\n",
+        host, port
+    );
+
+    let parsed_req = katana_core::raw::parse_raw_request_str(&raw_http, false).unwrap();
+    assert_eq!(parsed_req.method, "GET");
+    assert!(parsed_req.url.contains("/about"));
+
+    let temp_cp_file = std::env::temp_dir().join(format!("test_cp_{}.json", std::process::id()));
+    let cp = katana_core::CrawlCheckpoint::new(
+        vec![parsed_req.url.clone()],
+        vec![format!("{}/contact", base_url)],
+    );
+    cp.save(temp_cp_file.to_str().unwrap()).unwrap();
+
+    let loaded_cp = katana_core::CrawlCheckpoint::load(temp_cp_file.to_str().unwrap()).unwrap();
+    assert_eq!(loaded_cp.visited_urls.len(), 1);
+    assert_eq!(loaded_cp.in_flight_urls.len(), 1);
+
+    let _ = std::fs::remove_file(temp_cp_file);
+    server_handle.abort();
+}
