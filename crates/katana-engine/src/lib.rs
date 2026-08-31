@@ -1,4 +1,5 @@
 pub mod backoff;
+pub mod browser;
 pub mod headless;
 pub mod hybrid;
 pub mod standard;

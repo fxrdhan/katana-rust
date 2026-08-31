@@ -212,3 +212,40 @@ async fn test_e2e_custom_fields_and_storage() {
     // Clean up test directory
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[tokio::test]
+async fn test_e2e_headless_form_fill() {
+    let (base_url, server_handle) = start_mock_server().await;
+
+    let options = Options {
+        urls: vec![base_url.clone()],
+        max_depth: 2,
+        concurrency: 2,
+        timeout: 5,
+        headless: true,
+        form_extraction: true,
+        automatic_form_fill: true,
+        ..Default::default()
+    };
+
+    let engine = katana_engine::HeadlessEngine::new(options).unwrap();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+
+    let root_url = base_url.clone();
+    let crawl_handle = tokio::spawn(async move {
+        engine.crawl(&root_url, tx).await.unwrap();
+    });
+
+    let mut discovered_form_actions = Vec::new();
+
+    while let Some(res) = rx.recv().await {
+        if let Some(req) = res.request {
+            if req.tag == "form-action" {
+                discovered_form_actions.push(req);
+            }
+        }
+    }
+
+    crawl_handle.await.unwrap();
+    server_handle.abort();
+}
