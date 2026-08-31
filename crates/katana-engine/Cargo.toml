@@ -21,3 +21,5 @@ md-5 = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 lru = { workspace = true }
+lazy_static = { workspace = true }
+regex = { workspace = true }
