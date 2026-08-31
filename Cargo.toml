@@ -56,3 +56,4 @@ dashmap = "6.1"
 lru = "0.13"
 md-5 = "0.10"
 sha2 = "0.10"
+criterion = { version = "0.5", default-features = false }
