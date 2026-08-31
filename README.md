@@ -18,7 +18,7 @@ The project is structured as a modular Cargo workspace:
 
 ```
 katana-rust/
-├── KATANA_ARCHITECTURE_CORPUS.md  # Authoritative architecture specification & ground truth
+├── ARCHITECTURE.md                # Authoritative architecture specification & ground truth
 ├── crates/
 │   ├── katana-core/               # Core data structures: Request, Response, Result, Options, Scope, Filters
 │   ├── katana-similarity/         # 3-Layer Deduplication: Charikar SimHash (FNV-1a), PathTrie, URL Fingerprinting
@@ -27,7 +27,7 @@ katana-rust/
 │   └── katana-cli/                # Main CLI binary, command-line flags (clap), Runner, Output formats
 ```
 
-For the comprehensive technical specification, refer to [KATANA_ARCHITECTURE_CORPUS.md](./KATANA_ARCHITECTURE_CORPUS.md).
+For the comprehensive technical specification, refer to [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ---
 
