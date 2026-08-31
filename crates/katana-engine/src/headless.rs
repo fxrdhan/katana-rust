@@ -184,7 +184,7 @@ impl Engine for HeadlessEngine {
                         headers: headers_map,
                         content_length: body_text.len(),
                         root_hostname: root_hostname.clone(),
-                        forms,
+                        forms: forms.clone(),
                         body: body_text.clone(),
                         api_type: api_type.clone(),
                         secrets: secrets.clone(),
@@ -224,6 +224,55 @@ impl Engine for HeadlessEngine {
                                 "script",
                             );
                             discovered.extend(js_discovered);
+                        }
+                    }
+
+                    // Form auto-fill generation (-aff)
+                    if self.options.automatic_form_fill {
+                        for form in &forms {
+                            if !form.action.is_empty() {
+                                let action_url = Url::parse(&current_req.url)
+                                    .ok()
+                                    .and_then(|base| base.join(&form.action).ok())
+                                    .map(|u| u.to_string())
+                                    .unwrap_or_else(|| form.action.clone());
+
+                                let params: Vec<String> = form
+                                    .parameters
+                                    .iter()
+                                    .map(|p| {
+                                        let val =
+                                            crate::browser::get_field_synthetic_value(p, "text");
+                                        format!("{}={}", p, val)
+                                    })
+                                    .collect();
+                                let payload = params.join("&");
+
+                                let (method, final_url, body) =
+                                    if form.method.eq_ignore_ascii_case("POST") {
+                                        ("POST".to_string(), action_url, payload)
+                                    } else {
+                                        let full_url = if payload.is_empty() {
+                                            action_url
+                                        } else if action_url.contains('?') {
+                                            format!("{}&{}", action_url, payload)
+                                        } else {
+                                            format!("{}?{}", action_url, payload)
+                                        };
+                                        ("GET".to_string(), full_url, String::new())
+                                    };
+
+                                discovered.push(Request {
+                                    method,
+                                    url: final_url,
+                                    body,
+                                    depth: current_req.depth + 1,
+                                    tag: "form-action".to_string(),
+                                    attribute: "action".to_string(),
+                                    root_hostname: root_hostname.clone(),
+                                    ..Default::default()
+                                });
+                            }
                         }
                     }
 
