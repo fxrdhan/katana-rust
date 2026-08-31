@@ -52,7 +52,7 @@ pub fn parse_robots_txt(base_url: &str, content: &str) -> Vec<Request> {
     results
 }
 
-/// Parses a sitemap.xml body content and extracts all <loc> endpoint URLs.
+/// Parses a sitemap.xml body content and extracts all `<loc>` endpoint URLs.
 pub fn parse_sitemap_xml(base_url: &str, content: &str) -> Vec<Request> {
     let mut results = Vec::new();
     let base = match Url::parse(base_url) {
