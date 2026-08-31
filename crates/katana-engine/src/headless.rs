@@ -136,6 +136,13 @@ impl Engine for HeadlessEngine {
                         self.backoff.record_success(&host);
                     }
 
+                    let content_type = resp
+                        .headers()
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+
                     let headers_map = resp
                         .headers()
                         .iter()
@@ -158,6 +165,19 @@ impl Engine for HeadlessEngine {
                         Vec::new()
                     };
 
+                    let api_type = katana_core::knowledge::classify_api_endpoint(
+                        &current_req.url,
+                        &content_type,
+                        &body_text,
+                    )
+                    .map(|t| t.to_string());
+
+                    let secrets = if self.options.scan_secrets {
+                        katana_core::knowledge::SecretScanner::scan(&body_text, &current_req.url)
+                    } else {
+                        Vec::new()
+                    };
+
                     let nav_resp = Response {
                         depth: current_req.depth,
                         status_code: status,
@@ -166,6 +186,8 @@ impl Engine for HeadlessEngine {
                         root_hostname: root_hostname.clone(),
                         forms,
                         body: body_text.clone(),
+                        api_type: api_type.clone(),
+                        secrets: secrets.clone(),
                         ..Default::default()
                     };
 
@@ -173,6 +195,8 @@ impl Engine for HeadlessEngine {
                         timestamp: Utc::now(),
                         request: Some(current_req.clone()),
                         response: Some(nav_resp),
+                        api_type,
+                        secrets,
                         error: String::new(),
                     };
 
@@ -211,8 +235,8 @@ impl Engine for HeadlessEngine {
                     let err_result = CrawlResult {
                         timestamp: Utc::now(),
                         request: Some(current_req),
-                        response: None,
                         error: err.to_string(),
+                        ..Default::default()
                     };
                     let _ = sender.send(err_result);
                 }
