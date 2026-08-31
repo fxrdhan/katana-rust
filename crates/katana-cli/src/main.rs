@@ -73,6 +73,10 @@ async fn main() -> anyhow::Result<()> {
         display_out_scope: args.display_out_scope,
         proxy: args.proxy,
         scan_secrets: args.scan_secrets,
+        output_file: args.output.clone(),
+        store_response: args.store_response,
+        store_response_dir: args.store_response_dir,
+        custom_fields_config: args.config,
         ..Default::default()
     };
 
@@ -84,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(StandardEngine::new(options)?)
     };
 
-    let writer = OutputWriter::new(args.jsonl);
+    let writer = OutputWriter::new(args.jsonl, args.output.as_deref());
     let (tx, mut rx) = mpsc::unbounded_channel();
 
     // Spawn output processor
