@@ -12,6 +12,10 @@ scraper = { workspace = true }
 regex = { workspace = true }
 lazy_static = { workspace = true }
 url = { workspace = true }
+oxc_allocator = { workspace = true }
+oxc_parser = { workspace = true }
+oxc_span = { workspace = true }
+oxc_ast = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
