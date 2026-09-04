@@ -141,23 +141,72 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let par_semaphore = Arc::new(tokio::sync::Semaphore::new(args.parallelism.max(1)));
-    let mut join_handles = Vec::new();
+    let resume_filename = args
+        .resume
+        .clone()
+        .unwrap_or_else(|| "katana.resume".to_string());
 
-    for target in target_urls {
-        let permit = par_semaphore.clone().acquire_owned().await?;
-        let engine_clone = engine.clone();
-        let tx_clone = tx.clone();
-        join_handles.push(tokio::spawn(async move {
-            let _permit = permit;
-            if let Err(e) = engine_clone.crawl(&target, tx_clone).await {
-                eprintln!("Crawl error for {}: {}", target, e);
-            }
-        }));
+    let in_flight_targets = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+    for target in &target_urls {
+        in_flight_targets.lock().unwrap().insert(target.clone());
     }
 
-    for handle in join_handles {
-        let _ = handle.await;
+    let in_flight_targets_ctrl_c = in_flight_targets.clone();
+    let par_semaphore = Arc::new(tokio::sync::Semaphore::new(args.parallelism.max(1)));
+
+    let engine_for_crawl = engine.clone();
+    let tx_for_crawl = tx.clone();
+    let targets_to_crawl = target_urls.clone();
+
+    let crawl_worker = async move {
+        let mut join_handles = Vec::new();
+        for target in targets_to_crawl {
+            let permit = match par_semaphore.clone().acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => break,
+            };
+            let engine_clone = engine_for_crawl.clone();
+            let tx_clone = tx_for_crawl.clone();
+            let in_flight_clone = in_flight_targets.clone();
+            let tgt = target.clone();
+            join_handles.push(tokio::spawn(async move {
+                let _permit = permit;
+                if let Err(e) = engine_clone.crawl(&tgt, tx_clone).await {
+                    eprintln!("Crawl error for {}: {}", tgt, e);
+                }
+                in_flight_clone.lock().unwrap().remove(&tgt);
+            }));
+        }
+
+        for handle in join_handles {
+            let _ = handle.await;
+        }
+    };
+
+    tokio::select! {
+        _ = crawl_worker => {
+            if args.resume.is_none() && std::path::Path::new(&resume_filename).exists() {
+                let _ = std::fs::remove_file(&resume_filename);
+            }
+        }
+        _ = tokio::signal::ctrl_c() => {
+            eprintln!("\n[!] SIGINT received. Saving crawl checkpoint to: {}", resume_filename);
+            let remaining_targets: Vec<String> = in_flight_targets_ctrl_c
+                .lock()
+                .unwrap()
+                .iter()
+                .cloned()
+                .collect();
+            if let Err(e) = engine.dump_checkpoint(&resume_filename, remaining_targets) {
+                eprintln!("Failed to save checkpoint: {}", e);
+            } else {
+                eprintln!(
+                    "[+] Checkpoint successfully saved to {}. Resume with: katana -resume {}",
+                    resume_filename, resume_filename
+                );
+            }
+            std::process::exit(130);
+        }
     }
 
     drop(tx);

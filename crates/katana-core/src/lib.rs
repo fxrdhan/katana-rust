@@ -10,7 +10,9 @@ pub mod scope;
 
 pub use custom_field::{CustomFieldConfig, CustomFieldManager};
 pub use error::KatanaError;
-pub use filters::{extract_parent_paths, is_cycle, is_logout_url, replace_all_query_param};
+pub use filters::{
+    extract_parent_paths, is_cycle, is_logout_url, replace_all_query_param, CompactUrlFilter,
+};
 pub use knowledge::{classify_api_endpoint, ApiType, SecretFinding, SecretScanner};
 pub use navigation::{Form, Request, Response, Result};
 pub use options::{CrawlerOptions, Options};

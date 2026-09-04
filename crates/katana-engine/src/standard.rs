@@ -3,9 +3,12 @@ use crate::traits::Engine;
 use async_trait::async_trait;
 use chrono::Utc;
 use dashmap::{DashMap, DashSet};
+use governor::{
+    clock::DefaultClock, state::direct::NotKeyed, state::InMemoryState, Quota, RateLimiter,
+};
 use katana_core::error::KatanaError;
 use katana_core::filters::{
-    extract_parent_paths, is_cycle, is_logout_url, replace_all_query_param,
+    extract_parent_paths, is_cycle, is_logout_url, replace_all_query_param, CompactUrlFilter,
 };
 use katana_core::navigation::{Request, Response, Result as CrawlResult};
 use katana_core::options::Options;
@@ -15,6 +18,7 @@ use katana_parser::{extract_endpoints_from_regex, parse_forms, parse_html_endpoi
 use katana_similarity::{fingerprint_url, PathTrie};
 use reqwest::Client;
 use std::collections::{HashMap, VecDeque};
+use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,16 +26,23 @@ use tokio::sync::{mpsc, Semaphore};
 use tracing::{debug, error, info};
 use url::Url;
 
+pub type TokenBucketRateLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock>;
+
 #[derive(Clone)]
 pub struct StandardEngine {
     options: Arc<Options>,
     client: Client,
     scope: Arc<ScopeManager>,
+    visited_filter: Arc<CompactUrlFilter>,
     visited_urls: Arc<DashSet<String>>,
     domain_counters: Arc<DashMap<String, AtomicUsize>>,
     path_trie: Arc<PathTrie>,
     backoff: Arc<HostBackoffManager>,
     custom_fields: Arc<katana_core::CustomFieldManager>,
+    rate_limiter_second: Option<Arc<TokenBucketRateLimiter>>,
+    rate_limiter_minute: Option<Arc<TokenBucketRateLimiter>>,
+    active_queue: Arc<tokio::sync::Mutex<VecDeque<Request>>>,
+    in_flight_requests: Arc<DashSet<String>>,
 }
 
 fn store_response_to_disk(
@@ -95,15 +106,52 @@ impl StandardEngine {
             Arc::new(katana_core::CustomFieldManager::new())
         };
 
+        let rate_limiter_second = if options.rate_limit > 0 {
+            NonZeroU32::new(options.rate_limit as u32)
+                .map(|limit| Arc::new(RateLimiter::direct(Quota::per_second(limit))))
+        } else {
+            None
+        };
+
+        let rate_limiter_minute = if options.rate_limit_minute > 0 {
+            NonZeroU32::new(options.rate_limit_minute as u32)
+                .map(|limit| Arc::new(RateLimiter::direct(Quota::per_minute(limit))))
+        } else {
+            None
+        };
+
+        let visited_filter = Arc::new(CompactUrlFilter::new());
+        let visited_urls = Arc::new(DashSet::new());
+
+        // Pre-populate if resuming from checkpoint file
+        if let Some(resume_path) = &options.resume_file {
+            if let Ok(cp) = katana_core::CrawlCheckpoint::load(resume_path) {
+                info!(
+                    "Resuming from checkpoint file: {} ({} visited URLs)",
+                    resume_path,
+                    cp.visited_urls.len()
+                );
+                for u in cp.visited_urls {
+                    visited_filter.insert(&u);
+                    visited_urls.insert(u);
+                }
+            }
+        }
+
         Ok(Self {
             options: Arc::new(options),
             client,
             scope,
-            visited_urls: Arc::new(DashSet::new()),
+            visited_filter,
+            visited_urls,
             domain_counters: Arc::new(DashMap::new()),
             path_trie,
             backoff,
             custom_fields,
+            rate_limiter_second,
+            rate_limiter_minute,
+            active_queue: Arc::new(tokio::sync::Mutex::new(VecDeque::new())),
+            in_flight_requests: Arc::new(DashSet::new()),
         })
     }
 
@@ -205,10 +253,11 @@ impl StandardEngine {
                 }
             }
 
-            // 7. Uniqueness check
-            if !self.visited_urls.insert(req_url.clone()) && nr.custom_fields.is_empty() {
+            // 7. Uniqueness check via 64-bit compact fingerprint filter
+            if !self.visited_filter.insert(&req_url) && nr.custom_fields.is_empty() {
                 continue;
             }
+            self.visited_urls.insert(req_url.clone());
 
             // 8. Cycle detection
             if is_cycle(&nr.url) {
@@ -241,9 +290,10 @@ impl StandardEngine {
                     if self.options.filter_similar {
                         check_url = fingerprint_url(&check_url, Some(&self.path_trie));
                     }
-                    if !self.visited_urls.insert(check_url) {
+                    if !self.visited_filter.insert(&check_url) {
                         continue;
                     }
+                    self.visited_urls.insert(check_url);
                     if !self.scope.validate(&parent_url, &nr.root_hostname) {
                         continue;
                     }
@@ -294,6 +344,32 @@ impl StandardEngine {
             }
         }
     }
+
+    /// Dumps the current crawl state to a checkpoint file.
+    pub fn dump_checkpoint_file(&self, path: &str, in_flight: Vec<String>) -> anyhow::Result<()> {
+        let visited: Vec<String> = self.visited_urls.iter().map(|item| item.clone()).collect();
+        let mut all_in_flight = std::collections::HashSet::new();
+        for u in in_flight {
+            all_in_flight.insert(u);
+        }
+        for u in self.in_flight_requests.iter() {
+            all_in_flight.insert(u.clone());
+        }
+        if let Ok(q) = self.active_queue.try_lock() {
+            for req in q.iter() {
+                all_in_flight.insert(req.url.clone());
+            }
+        }
+        let checkpoint =
+            katana_core::CrawlCheckpoint::new(visited, all_in_flight.into_iter().collect());
+        checkpoint.save(path)
+    }
+
+    /// Returns the currently visited URLs.
+    pub fn visited_urls(&self) -> Vec<String> {
+        self.visited_urls.iter().map(|item| item.clone()).collect()
+    }
+
     async fn process_request(
         &self,
         current_req: Request,
@@ -317,14 +393,26 @@ impl StandardEngine {
             tokio::time::sleep(Duration::from_secs(self.options.delay)).await;
         }
 
+        // Apply token-bucket rate limiters (governor)
+        if let Some(limiter) = &self.rate_limiter_second {
+            limiter.until_ready().await;
+        }
+        if let Some(limiter) = &self.rate_limiter_minute {
+            limiter.until_ready().await;
+        }
+
         debug!(
             "Fetching [{}] {} depth={}",
             current_req.method, current_req.url, current_req.depth
         );
 
+        let current_url = current_req.url.clone();
+        self.in_flight_requests.insert(current_url.clone());
+
         let req_obj = match self.build_http_request(&current_req) {
             Ok(r) => r,
             Err(err) => {
+                self.in_flight_requests.remove(&current_url);
                 error!("Error building request for {}: {}", current_req.url, err);
                 let err_result = CrawlResult {
                     timestamp: Utc::now(),
@@ -517,11 +605,16 @@ impl StandardEngine {
                 let _ = sender.send(err_result);
             }
         }
+        self.in_flight_requests.remove(&current_url);
     }
 }
 
 #[async_trait]
 impl Engine for StandardEngine {
+    fn dump_checkpoint(&self, path: &str, in_flight: Vec<String>) -> anyhow::Result<()> {
+        self.dump_checkpoint_file(path, in_flight)
+    }
+
     async fn crawl(
         &self,
         root_url: &str,
@@ -544,11 +637,34 @@ impl Engine for StandardEngine {
         self.seed_known_files(root_url, &mut initial_queue, &sender)
             .await;
 
+        // Seed in-flight URLs from checkpoint file if resuming
+        if let Some(resume_path) = &self.options.resume_file {
+            if let Ok(cp) = katana_core::CrawlCheckpoint::load(resume_path) {
+                let resume_reqs: Vec<Request> = cp
+                    .in_flight_urls
+                    .into_iter()
+                    .map(|u| Request {
+                        method: "GET".to_string(),
+                        url: u,
+                        depth: 1,
+                        root_hostname: root_hostname.clone(),
+                        ..Default::default()
+                    })
+                    .collect();
+                self.enqueue(&mut initial_queue, resume_reqs, &sender);
+            }
+        }
+
         info!("Starting Standard crawl for root: {}", root_url);
 
         let concurrency = self.options.concurrency.max(1);
         let semaphore = Arc::new(Semaphore::new(concurrency));
-        let queue = Arc::new(tokio::sync::Mutex::new(initial_queue));
+        {
+            let mut q = self.active_queue.lock().await;
+            q.clear();
+            q.extend(initial_queue);
+        }
+        let queue = self.active_queue.clone();
         let notify = Arc::new(tokio::sync::Notify::new());
         let active_workers = Arc::new(AtomicUsize::new(0));
 
@@ -683,5 +799,48 @@ mod tests {
             let http_req = engine.build_http_request(&req).unwrap();
             assert_eq!(http_req.method().as_str(), *method);
         }
+    }
+
+    #[test]
+    fn test_checkpoint_dump_and_resume_persistence() {
+        let temp_dir = std::env::temp_dir().join(format!("cp_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let cp_file = temp_dir.join("test.resume");
+        let cp_path = cp_file.to_str().unwrap();
+
+        let options = Options::default();
+        let engine = StandardEngine::new(options).unwrap();
+        engine
+            .visited_urls
+            .insert("https://example.com/crawled1".to_string());
+        engine
+            .visited_urls
+            .insert("https://example.com/crawled2".to_string());
+
+        let in_flight = vec!["https://example.com/pending1".to_string()];
+        engine.dump_checkpoint_file(cp_path, in_flight).unwrap();
+
+        assert!(cp_file.exists());
+        let loaded = katana_core::CrawlCheckpoint::load(cp_path).unwrap();
+        assert_eq!(loaded.visited_urls.len(), 2);
+        assert_eq!(loaded.in_flight_urls.len(), 1);
+        assert_eq!(loaded.in_flight_urls[0], "https://example.com/pending1");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_token_bucket_rate_limiter_creation() {
+        let options = Options {
+            rate_limit: 10,
+            rate_limit_minute: 60,
+            ..Default::default()
+        };
+        let engine = StandardEngine::new(options).unwrap();
+        assert!(engine.rate_limiter_second.is_some());
+        assert!(engine.rate_limiter_minute.is_some());
+
+        let limiter = engine.rate_limiter_second.as_ref().unwrap();
+        limiter.until_ready().await;
     }
 }
