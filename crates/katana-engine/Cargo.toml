@@ -28,3 +28,5 @@ which = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 governor = { workspace = true }
+futures = { workspace = true }
+tokio-tungstenite = { workspace = true }
