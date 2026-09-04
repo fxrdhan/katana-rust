@@ -32,10 +32,31 @@ impl HeadlessEngine {
         let state_graph = Arc::new(StateGraph::new(2));
         let backoff = Arc::new(HostBackoffManager::default());
 
-        let client = Client::builder()
+        let mut client_builder = Client::builder()
             .timeout(Duration::from_secs(options.timeout))
-            .danger_accept_invalid_certs(true)
-            .build()?;
+            .danger_accept_invalid_certs(true);
+
+        let tls_preset = if options.tls_impersonate {
+            options.tls_preset.as_deref().or(Some("chrome"))
+        } else {
+            options.tls_preset.as_deref()
+        };
+        client_builder = crate::tls::apply_tls_configuration(client_builder, tls_preset);
+
+        if let Some(proxy_str) = &options.proxy {
+            let rotator = Arc::new(crate::proxy::ProxyRotator::from_file_or_comma_separated(
+                proxy_str,
+            ));
+            if let Some(p) = crate::proxy::ProxyRotator::build_rotating_proxy(rotator) {
+                client_builder = client_builder.proxy(p);
+            }
+        }
+
+        if let Some(ua) = &options.user_agent {
+            client_builder = client_builder.user_agent(ua);
+        }
+
+        let client = client_builder.build()?;
 
         Ok(Self {
             options: Arc::new(options),

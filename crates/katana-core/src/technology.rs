@@ -3,12 +3,14 @@ use regex::Regex;
 use std::collections::{BTreeSet, HashMap};
 
 lazy_static! {
-    static ref META_GENERATOR_REGEX: Regex =
-        Regex::new(r#"(?i)<meta\s+name=["']generator["']\s+content=["']([^"']+)["']"#).unwrap();
+    static ref META_GENERATOR_REGEX: Regex = Regex::new(
+        r#"(?i)<meta\s+(?:[^>]*\s+)?name=["']generator["']\s+(?:[^>]*\s+)?content=["']([^"']+)["']|<meta\s+(?:[^>]*\s+)?content=["']([^"']+)["']\s+(?:[^>]*\s+)?name=["']generator["']"#
+    )
+    .unwrap();
     static ref SCRIPT_SRC_REGEX: Regex =
-        Regex::new(r#"(?i)<script[^>]+src=["']([^"']+)["']"#).unwrap();
+        Regex::new(r#"(?i)<script\b[^>]*\bsrc=["']?([^"'>\s]+)["']?"#).unwrap();
     static ref LINK_HREF_REGEX: Regex =
-        Regex::new(r#"(?i)<link[^>]+href=["']([^"']+)["']"#).unwrap();
+        Regex::new(r#"(?i)<link\b[^>]*\bhref=["']?([^"'>\s]+)["']?"#).unwrap();
 }
 
 /// Detects web technologies and frameworks (Wappalyzer parity) from response headers and body content.
@@ -152,7 +154,8 @@ pub fn detect_technologies(headers: &HashMap<String, String>, body: &str) -> Vec
 
     // 2. Analyze Meta Generator tags
     for cap in META_GENERATOR_REGEX.captures_iter(body) {
-        if let Some(content) = cap.get(1) {
+        let content_opt = cap.get(1).or_else(|| cap.get(2));
+        if let Some(content) = content_opt {
             let gen = content.as_str().to_lowercase();
             if gen.contains("wordpress") {
                 detected.insert("WordPress".to_string());
@@ -316,5 +319,22 @@ mod tests {
         let techs = detect_technologies(&headers, html);
         assert!(techs.contains(&"Next.js".to_string()));
         assert!(techs.contains(&"React".to_string()));
+    }
+
+    #[test]
+    fn test_detect_meta_generator_inverted_attributes() {
+        let headers = HashMap::new();
+        // content attribute precedes name attribute
+        let html = r#"
+            <!DOCTYPE html>
+            <html>
+            <head><meta content="WordPress 6.5" name="generator"></head>
+            <body></body>
+            </html>
+        "#;
+
+        let techs = detect_technologies(&headers, html);
+        assert!(techs.contains(&"WordPress".to_string()));
+        assert!(techs.contains(&"PHP".to_string()));
     }
 }

@@ -99,9 +99,6 @@ impl Engine for HybridEngine {
             for spa_url in &detected_spas {
                 let _ = self.headless_engine.crawl(spa_url, sender.clone()).await;
             }
-        } else {
-            // If no individual SPA was detected, perform dynamic rendering pass on root URL
-            let _ = self.headless_engine.crawl(root_url, sender).await;
         }
 
         Ok(())

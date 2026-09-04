@@ -123,7 +123,7 @@ async fn main() -> anyhow::Result<()> {
         tls_preset: args.tls_preset,
         scan_secrets: args.scan_secrets,
         output_file: args.output.clone(),
-        store_response: args.store_response,
+        store_response: args.store_response || args.store_response_dir.is_some(),
         store_response_dir: args.store_response_dir,
         custom_fields_config: args.config,
         raw_request_file: args.raw_request.clone(),
