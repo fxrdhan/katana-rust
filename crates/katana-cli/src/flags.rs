@@ -172,6 +172,38 @@ pub struct CliArgs {
     #[arg(long = "jsonl")]
     pub jsonl: bool,
 
+    /// Omit raw requests/responses from jsonl output (-or)
+    #[arg(long = "omit-raw", alias = "or")]
+    pub omit_raw: bool,
+
+    /// Omit response body from jsonl output (-ob)
+    #[arg(long = "omit-body", alias = "ob")]
+    pub omit_body: bool,
+
+    /// Regex or list of regexes to match on output url (-mr)
+    #[arg(long = "match-regex", alias = "mr", value_delimiter = ',')]
+    pub match_regex: Vec<String>,
+
+    /// Regex or list of regexes to filter on output url (-fr)
+    #[arg(long = "filter-regex", alias = "fr", value_delimiter = ',')]
+    pub filter_regex: Vec<String>,
+
+    /// Extract TLS/SSL certificate metadata and client fingerprints (-tls, --tls-data)
+    #[arg(long = "tls-data", alias = "tls")]
+    pub tls_data: bool,
+
+    /// Automated CAPTCHA solver provider, e.g. capsolver (-csp)
+    #[arg(long = "captcha-solver-provider", alias = "csp")]
+    pub captcha_solver_provider: Option<String>,
+
+    /// Automated CAPTCHA solver API key (-csk, --capsolver-key)
+    #[arg(
+        long = "captcha-solver-api-key",
+        alias = "csk",
+        visible_alias = "capsolver-key"
+    )]
+    pub captcha_solver_api_key: Option<String>,
+
     /// Silent mode - output only discovered endpoints, suppressing logs and progress (-silent, -s)
     #[arg(short = 's', long = "silent")]
     pub silent: bool,
@@ -275,5 +307,40 @@ mod tests {
                 "Cookie: session=abc, user=def"
             ]
         );
+    }
+
+    #[test]
+    fn test_cli_flags_extended_filtering_and_upstream_parity() {
+        let input = [
+            "katana",
+            "-u",
+            "https://example.com",
+            "-or",
+            "-ob",
+            "-mr",
+            ".*admin.*,.*api.*",
+            "-fr",
+            ".*logout.*",
+            "-tls",
+            "-csp",
+            "capsolver",
+            "-csk",
+            "CAP-1234567890",
+            "--jsonl",
+        ];
+        let normalized = normalize_cli_args(input);
+        let args = CliArgs::try_parse_from(normalized).unwrap();
+
+        assert!(args.omit_raw);
+        assert!(args.omit_body);
+        assert_eq!(args.match_regex, vec![".*admin.*", ".*api.*"]);
+        assert_eq!(args.filter_regex, vec![".*logout.*"]);
+        assert!(args.tls_data);
+        assert_eq!(args.captcha_solver_provider.as_deref(), Some("capsolver"));
+        assert_eq!(
+            args.captcha_solver_api_key.as_deref(),
+            Some("CAP-1234567890")
+        );
+        assert!(args.jsonl);
     }
 }
