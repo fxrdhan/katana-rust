@@ -10,4 +10,9 @@ pub trait Engine: Send + Sync {
         root_url: &str,
         sender: mpsc::UnboundedSender<CrawlResult>,
     ) -> anyhow::Result<()>;
+
+    /// Dump crawl checkpoint state to disk.
+    fn dump_checkpoint(&self, _path: &str, _in_flight: Vec<String>) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
