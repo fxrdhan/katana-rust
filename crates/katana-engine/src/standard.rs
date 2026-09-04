@@ -82,8 +82,18 @@ impl StandardEngine {
             client_builder = client_builder.redirect(reqwest::redirect::Policy::none());
         }
 
-        if let Some(proxy_url) = &options.proxy {
-            client_builder = client_builder.proxy(reqwest::Proxy::all(proxy_url)?);
+        let tls_preset = if options.tls_impersonate {
+            options.tls_preset.as_deref().or(Some("chrome"))
+        } else {
+            options.tls_preset.as_deref()
+        };
+        client_builder = crate::tls::apply_tls_configuration(client_builder, tls_preset);
+
+        if let Some(proxy_str) = &options.proxy {
+            let rotator = crate::proxy::ProxyRotator::from_comma_separated(proxy_str);
+            if let Some(p) = rotator.next_reqwest_proxy() {
+                client_builder = client_builder.proxy(p);
+            }
         }
 
         if let Some(ua) = &options.user_agent {
@@ -499,12 +509,15 @@ impl StandardEngine {
                     None
                 };
 
+                let technologies = katana_core::detect_technologies(&headers_map, &body_text);
+
                 let nav_resp = Response {
                     depth: current_req.depth,
                     status_code: status,
                     headers: headers_map,
                     content_length: body_text.len(),
                     root_hostname: current_req.root_hostname.clone(),
+                    technologies: technologies.clone(),
                     forms,
                     body: body_text.clone(),
                     stored_response_path: stored_path.unwrap_or_default(),
@@ -521,6 +534,7 @@ impl StandardEngine {
                     request: Some(final_req),
                     response: Some(nav_resp),
                     api_type,
+                    technologies,
                     secrets,
                     error: String::new(),
                 };
