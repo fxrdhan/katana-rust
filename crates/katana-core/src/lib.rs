@@ -7,6 +7,7 @@ pub mod options;
 pub mod raw;
 pub mod resume;
 pub mod scope;
+pub mod storage;
 pub mod technology;
 
 pub use custom_field::{CustomFieldConfig, CustomFieldManager};
@@ -20,4 +21,5 @@ pub use options::{CrawlerOptions, Options};
 pub use raw::{parse_raw_request_file, parse_raw_request_str};
 pub use resume::CrawlCheckpoint;
 pub use scope::{FieldScope, ScopeManager};
+pub use storage::ResponseStorageManager;
 pub use technology::detect_technologies;
