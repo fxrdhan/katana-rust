@@ -45,7 +45,7 @@ pub struct CliArgs {
     pub delay: u64,
 
     /// Custom header/cookie to include in all HTTP requests in header:value format (-H)
-    #[arg(short = 'H', long = "headers", value_delimiter = ',')]
+    #[arg(short = 'H', long = "headers")]
     pub headers: Vec<String>,
 
     /// Maximum duration to crawl target in seconds or duration format like 10s, 5m (-ct)
@@ -237,5 +237,27 @@ mod tests {
         assert_eq!(args.rate_limit, 300);
         assert_eq!(args.rate_limit_minute, 5000);
         assert_eq!(args.crawl_duration.as_deref(), Some("30s"));
+    }
+
+    #[test]
+    fn test_cli_flags_custom_headers_with_commas() {
+        let input = [
+            "katana",
+            "-u",
+            "https://example.com",
+            "-H",
+            "Accept: text/html,application/xhtml+xml;q=0.9",
+            "-H",
+            "Cookie: session=abc, user=def",
+        ];
+        let normalized = normalize_cli_args(input);
+        let args = CliArgs::try_parse_from(normalized).unwrap();
+        assert_eq!(
+            args.headers,
+            vec![
+                "Accept: text/html,application/xhtml+xml;q=0.9",
+                "Cookie: session=abc, user=def"
+            ]
+        );
     }
 }
