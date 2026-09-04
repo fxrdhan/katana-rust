@@ -52,24 +52,7 @@ fn store_response_to_disk(
     headers: &HashMap<String, String>,
     body: &str,
 ) -> Option<String> {
-    use sha2::Digest;
-    std::fs::create_dir_all(dir).ok()?;
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(url.as_bytes());
-    hasher.update(Utc::now().to_rfc3339().as_bytes());
-    let file_hash = format!("{:x}", hasher.finalize());
-    let filename = format!("{}.txt", &file_hash[..16]);
-    let file_path = format!("{}/{}", dir.trim_end_matches('/'), filename);
-
-    let mut content = format!("HTTP/1.1 {}\r\n", status);
-    for (k, v) in headers {
-        content.push_str(&format!("{}: {}\r\n", k, v));
-    }
-    content.push_str("\r\n");
-    content.push_str(body);
-
-    std::fs::write(&file_path, content).ok()?;
-    Some(file_path)
+    katana_core::ResponseStorageManager::store_response(dir, url, status, headers, body).ok()
 }
 
 impl StandardEngine {

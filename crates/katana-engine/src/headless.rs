@@ -276,6 +276,24 @@ impl Engine for HeadlessEngine {
 
                     let technologies = katana_core::detect_technologies(&headers_map, &body_text);
 
+                    let stored_path = if self.options.store_response {
+                        let dir = self
+                            .options
+                            .store_response_dir
+                            .as_deref()
+                            .unwrap_or("katana_response");
+                        katana_core::ResponseStorageManager::store_response(
+                            dir,
+                            &current_req.url,
+                            status,
+                            &headers_map,
+                            &body_text,
+                        )
+                        .ok()
+                    } else {
+                        None
+                    };
+
                     let nav_resp = Response {
                         depth: current_req.depth,
                         status_code: status,
@@ -285,6 +303,7 @@ impl Engine for HeadlessEngine {
                         technologies: technologies.clone(),
                         forms: forms.clone(),
                         body: body_text.clone(),
+                        stored_response_path: stored_path.unwrap_or_default(),
                         api_type: api_type.clone(),
                         secrets: secrets.clone(),
                         ..Default::default()
