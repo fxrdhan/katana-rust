@@ -43,14 +43,46 @@ pub struct ExtractedJSEndpoint {
     pub endpoint_type: String,
 }
 
+fn normalize_endpoint_slashes(s: &str) -> String {
+    if let Some((scheme, rest)) = s.split_once("://") {
+        let clean_rest = normalize_path_slashes(rest);
+        format!("{}://{}", scheme, clean_rest)
+    } else if let Some(stripped) = s.strip_prefix("//") {
+        let clean_rest = normalize_path_slashes(stripped);
+        format!("//{}", clean_rest)
+    } else {
+        normalize_path_slashes(s)
+    }
+}
+
+fn normalize_path_slashes(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut prev_slash = false;
+    for c in s.chars() {
+        if c == '/' {
+            if !prev_slash {
+                result.push(c);
+                prev_slash = true;
+            }
+        } else {
+            result.push(c);
+            prev_slash = false;
+        }
+    }
+    result
+}
+
 /// Evaluates an AST expression to a static string if it is composed of string literals,
-/// tracked variable identifiers, template literals, parenthesized expressions, or binary additions (+).
+/// numeric/boolean literals, tracked variable identifiers, template literals, parenthesized expressions,
+/// or binary additions (+).
 fn resolve_expression_to_string(
     expr: &Expression,
     variables: &HashMap<String, String>,
 ) -> Option<String> {
     match expr {
         Expression::StringLiteral(s) => Some(s.value.as_str().to_string()),
+        Expression::NumericLiteral(n) => Some(n.value.to_string()),
+        Expression::BooleanLiteral(b) => Some(b.value.to_string()),
         Expression::Identifier(id) => variables.get(id.name.as_str()).cloned(),
         Expression::ParenthesizedExpression(p) => {
             resolve_expression_to_string(&p.expression, variables)
@@ -76,7 +108,7 @@ fn resolve_expression_to_string(
                 }
             }
             if !resolved.is_empty() {
-                Some(resolved)
+                Some(normalize_endpoint_slashes(&resolved))
             } else {
                 None
             }
@@ -155,27 +187,49 @@ fn get_callee_name(expr: &Expression) -> Option<String> {
     }
 }
 
+fn attribute_priority(attr: &str) -> u8 {
+    match attr {
+        "jsluice-call" => 4,
+        "jsluice-property" => 3,
+        "jsluice-template" | "jsluice-variable" | "jsluice-assignment" => 2,
+        _ => 1,
+    }
+}
+
 /// AST endpoint extractor with variable tracking and semantic context labeling.
 struct AstEndpointExtractor {
     variables: HashMap<String, String>,
-    candidates: Vec<(String, String)>, // (candidate_url_or_path, attribute_tag)
-    seen: HashSet<String>,
+    candidates: HashMap<String, (String, u8)>,
+    order: Vec<String>,
 }
 
 impl AstEndpointExtractor {
     fn new() -> Self {
         Self {
             variables: HashMap::new(),
-            candidates: Vec::new(),
-            seen: HashSet::new(),
+            candidates: HashMap::new(),
+            order: Vec::new(),
         }
     }
 
     fn add_candidate(&mut self, candidate: String, attribute: &str) {
         let trimmed = candidate.trim();
-        if is_valid_js_candidate(trimmed) && self.seen.insert(trimmed.to_string()) {
-            self.candidates
-                .push((trimmed.to_string(), attribute.to_string()));
+        if is_valid_js_candidate(trimmed) {
+            let p = attribute_priority(attribute);
+            let key = trimmed.to_string();
+            match self.candidates.get_mut(&key) {
+                Some((existing_attr, existing_p)) => {
+                    if p > *existing_p {
+                        *existing_attr = attribute.to_string();
+                        *existing_p = p;
+                    }
+                }
+                None => {
+                    self.candidates
+                        .insert(key.clone(), (attribute.to_string(), p));
+                    self.order.push(key);
+                }
+            }
         }
     }
 
@@ -585,20 +639,22 @@ pub fn extract_js_ast_endpoints(
             extractor.visit_statement(stmt);
         }
 
-        for (candidate, attribute) in extractor.candidates {
-            if let Ok(resolved) = base.join(&candidate) {
-                let resolved_str = resolved.to_string();
-                if seen_urls.insert(resolved_str.clone()) {
-                    results.push(Request {
-                        method: "GET".to_string(),
-                        url: resolved_str,
-                        depth: depth + 1,
-                        tag: tag.to_string(),
-                        attribute,
-                        root_hostname: root_hostname.clone(),
-                        source: base_url.to_string(),
-                        ..Default::default()
-                    });
+        for candidate in &extractor.order {
+            if let Some((attribute, _)) = extractor.candidates.get(candidate) {
+                if let Ok(resolved) = base.join(candidate) {
+                    let resolved_str = resolved.to_string();
+                    if seen_urls.insert(resolved_str.clone()) {
+                        results.push(Request {
+                            method: "GET".to_string(),
+                            url: resolved_str,
+                            depth: depth + 1,
+                            tag: tag.to_string(),
+                            attribute: attribute.clone(),
+                            root_hostname: root_hostname.clone(),
+                            source: base_url.to_string(),
+                            ..Default::default()
+                        });
+                    }
                 }
             }
         }
@@ -700,7 +756,44 @@ mod tests {
         assert!(urls.contains(&"https://example.com/api/v2/items"));
         assert!(urls.contains(&"https://api.example.com/v2/data"));
         assert!(urls.contains(&"https://example.com/dashboard/settings"));
-        assert!(urls.contains(&"https://example.com/api/v3/profile//details"));
+        assert!(urls.contains(&"https://example.com/api/v3/profile/42/details"));
+
+        let attr_map: HashMap<_, _> = requests
+            .iter()
+            .map(|r| (r.url.as_str(), r.attribute.as_str()))
+            .collect();
+        assert_eq!(
+            attr_map.get("https://example.com/api/v1/users"),
+            Some(&"jsluice-call")
+        );
+        assert_eq!(
+            attr_map.get("https://example.com/api/v1/login"),
+            Some(&"jsluice-call")
+        );
+        assert_eq!(
+            attr_map.get("https://example.com/api/v1/stats"),
+            Some(&"jsluice-call")
+        );
+        assert_eq!(
+            attr_map.get("https://auth.example.com/oauth/authorize"),
+            Some(&"jsluice-call")
+        );
+        assert_eq!(
+            attr_map.get("https://example.com/api/v2/items"),
+            Some(&"jsluice-property")
+        );
+        assert_eq!(
+            attr_map.get("https://api.example.com/v2/data"),
+            Some(&"jsluice-property")
+        );
+        assert_eq!(
+            attr_map.get("https://example.com/dashboard/settings"),
+            Some(&"jsluice-property")
+        );
+        assert_eq!(
+            attr_map.get("https://example.com/api/v3/profile/42/details"),
+            Some(&"jsluice-template")
+        );
     }
 
     #[test]
