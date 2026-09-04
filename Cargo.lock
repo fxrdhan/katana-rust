@@ -1314,6 +1314,7 @@ dependencies = [
  "katana-parser",
  "katana-similarity",
  "mimalloc",
+ "regex",
  "serde_json",
  "tokio",
  "tracing",
