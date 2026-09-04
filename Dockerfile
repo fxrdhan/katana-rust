@@ -24,8 +24,9 @@ RUN cargo build --release --bin katana
 # Stage 2: Minimal hardened runtime container (<25MB)
 FROM alpine:3.21
 
-# Install runtime dependencies for standard crawling and headless CDP
-RUN apk add --no-cache ca-certificates bind-tools chromium dumb-init && \
+# Install minimal production runtime dependencies: root certs, DNS tools, and dumb-init (<25MB image).
+# For in-container local headless execution, install chromium (apk add chromium) or pass --chrome-ws-url.
+RUN apk add --no-cache ca-certificates bind-tools dumb-init && \
     addgroup -S katana && adduser -S katana -G katana
 
 # Copy stripped binary from builder
