@@ -30,3 +30,6 @@ serde_json = { workspace = true }
 governor = { workspace = true }
 futures = { workspace = true }
 tokio-tungstenite = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+x509-parser = { workspace = true }

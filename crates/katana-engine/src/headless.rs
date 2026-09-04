@@ -24,6 +24,8 @@ pub struct HeadlessEngine {
     client: Client,
     state_graph: Arc<StateGraph>,
     backoff: Arc<HostBackoffManager>,
+    tls_extractor: Arc<crate::tls::TlsExtractor>,
+    captcha_solver: Option<Arc<dyn crate::captcha::CaptchaSolver>>,
 }
 
 impl HeadlessEngine {
@@ -31,6 +33,29 @@ impl HeadlessEngine {
         let standard_engine = StandardEngine::new(options.clone())?;
         let state_graph = Arc::new(StateGraph::new(2));
         let backoff = Arc::new(HostBackoffManager::default());
+        let tls_extractor = Arc::new(crate::tls::TlsExtractor::new());
+        let captcha_solver: Option<Arc<dyn crate::captcha::CaptchaSolver>> = if let Some(k) =
+            options.captcha_solver_api_key.as_ref()
+        {
+            let provider = options
+                .captcha_solver_provider
+                .as_deref()
+                .unwrap_or("capsolver");
+            match provider.to_lowercase().as_str() {
+                "capsolver" => Some(Arc::new(crate::captcha::CapsolverProvider::new(k.clone()))
+                    as Arc<dyn crate::captcha::CaptchaSolver>),
+                other => {
+                    anyhow::bail!("unsupported captcha solver provider: {}", other);
+                }
+            }
+        } else if let Some(provider) = options.captcha_solver_provider.as_deref() {
+            anyhow::bail!(
+                    "captcha solver provider '{}' specified without api key (-csk, --captcha-solver-api-key)",
+                    provider
+                );
+        } else {
+            None
+        };
 
         let mut client_builder = Client::builder()
             .timeout(Duration::from_secs(options.timeout))
@@ -64,6 +89,8 @@ impl HeadlessEngine {
             client,
             state_graph,
             backoff,
+            tls_extractor,
+            captcha_solver,
         })
     }
 
@@ -188,26 +215,99 @@ impl Engine for HeadlessEngine {
                                 // Collect live intercepted subresources
                                 cdp_subresources = session.drain_subresources().await;
 
-                                // Automated form filling
-                                if self.options.automatic_form_fill {
-                                    let body_snapshot =
-                                        session.get_html().await.unwrap_or_default();
-                                    let detected_forms = parse_forms(&body_snapshot);
-                                    let _ = session.fill_forms(&detected_forms).await;
+                                // Real-time CAPTCHA challenge detection & automated solver bypass
+                                let mut live_captcha = None;
+                                if let Ok(val) =
+                                    session.evaluate(crate::captcha::get_identify_js()).await
+                                {
+                                    if !val.is_null() {
+                                        live_captcha =
+                                            crate::captcha::identify::parse_captcha_info_from_value(
+                                                &val,
+                                                &current_req.url,
+                                            );
+                                    }
+                                }
+                                if live_captcha.is_none() {
+                                    let body_snap = session.get_html().await.unwrap_or_default();
+                                    live_captcha = crate::captcha::detect_captcha_in_html(
+                                        &body_snap,
+                                        &current_req.url,
+                                    );
                                 }
 
-                                // Interactive DOM clicking
-                                let _ = session.click_interactive_elements().await;
+                                let mut solved = false;
+                                if let Some(captcha_info) = &live_captcha {
+                                    info!(
+                                        "Real-time CAPTCHA challenge detected on {}: provider={} sitekey={}",
+                                        current_req.url, captcha_info.provider, captcha_info.sitekey
+                                    );
 
-                                // Final rendered DOM outer HTML
-                                let rendered_html = session.get_html().await.unwrap_or_default();
-                                let mut headers = HashMap::new();
-                                headers.insert(
-                                    "content-type".to_string(),
-                                    "text/html; charset=utf-8".to_string(),
-                                );
+                                    if let Some(solver) = &self.captcha_solver {
+                                        info!(
+                                            "Invoking CAPTCHA solver provider for {}",
+                                            captcha_info.provider
+                                        );
+                                        match solver.solve(captcha_info).await {
+                                            Ok(token) => {
+                                                info!("CAPTCHA solved successfully! Executing DOM bypass injection script");
+                                                let inject_js = crate::captcha::get_inject_script(
+                                                    &captcha_info.provider,
+                                                    &token,
+                                                );
+                                                let _ = session.evaluate(&inject_js).await;
+                                                tokio::time::sleep(Duration::from_millis(1500))
+                                                    .await;
+                                                solved = true;
+                                            }
+                                            Err(e) => {
+                                                warn!("CAPTCHA solving attempt failed: {}", e);
+                                            }
+                                        }
+                                    } else {
+                                        warn!(
+                                            "CAPTCHA challenge detected on {} but no solver configured; skipping navigation discovery on challenge widget",
+                                            current_req.url
+                                        );
+                                    }
+                                }
 
-                                Ok((200, headers, rendered_html))
+                                if live_captcha.is_some() && !solved {
+                                    let rendered_html =
+                                        session.get_html().await.unwrap_or_default();
+                                    let mut headers = HashMap::new();
+                                    headers.insert(
+                                        "content-type".to_string(),
+                                        "text/html; charset=utf-8".to_string(),
+                                    );
+                                    headers.insert(
+                                        "x-katana-captcha-unsolved".to_string(),
+                                        "true".to_string(),
+                                    );
+                                    Ok((403, headers, rendered_html))
+                                } else {
+                                    // Automated form filling
+                                    if self.options.automatic_form_fill {
+                                        let body_snapshot =
+                                            session.get_html().await.unwrap_or_default();
+                                        let detected_forms = parse_forms(&body_snapshot);
+                                        let _ = session.fill_forms(&detected_forms).await;
+                                    }
+
+                                    // Interactive DOM clicking
+                                    let _ = session.click_interactive_elements().await;
+
+                                    // Final rendered DOM outer HTML
+                                    let rendered_html =
+                                        session.get_html().await.unwrap_or_default();
+                                    let mut headers = HashMap::new();
+                                    headers.insert(
+                                        "content-type".to_string(),
+                                        "text/html; charset=utf-8".to_string(),
+                                    );
+
+                                    Ok((200, headers, rendered_html))
+                                }
                             } else {
                                 mgr.recycle_active_tab().await;
                                 // Fallback to HTTP client on CDP navigation error
@@ -297,6 +397,30 @@ impl Engine for HeadlessEngine {
 
                     let technologies = katana_core::detect_technologies(&headers_map, &body_text);
 
+                    let tls_data =
+                        if self.options.tls_data && current_req.url.starts_with("https://") {
+                            if let Ok(parsed_url) = Url::parse(&current_req.url) {
+                                if let Some(host_str) = parsed_url.host_str() {
+                                    let port = parsed_url.port().unwrap_or(443);
+                                    self.tls_extractor
+                                        .extract_tls_data(
+                                            host_str,
+                                            port,
+                                            self.options.tls_preset.as_deref(),
+                                        )
+                                        .await
+                                        .ok()
+                                        .map(|arc| (*arc).clone())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+
                     let stored_path = if self.options.store_response {
                         let dir = self
                             .options
@@ -315,25 +439,38 @@ impl Engine for HeadlessEngine {
                         None
                     };
 
+                    let mut final_req = current_req.clone();
+                    final_req.raw = katana_core::raw::serialize_raw_request(
+                        &final_req,
+                        &self.options.custom_headers,
+                    );
+
                     let nav_resp = Response {
                         depth: current_req.depth,
                         status_code: status,
-                        headers: headers_map,
+                        headers: headers_map.clone(),
                         content_length: body_text.len(),
                         root_hostname: root_hostname.clone(),
                         technologies: technologies.clone(),
                         forms: forms.clone(),
                         body: body_text.clone(),
+                        raw: katana_core::raw::serialize_raw_response(
+                            status,
+                            &headers_map,
+                            &body_text,
+                        ),
                         stored_response_path: stored_path.unwrap_or_default(),
                         api_type: api_type.clone(),
                         secrets: secrets.clone(),
+                        tls_data: tls_data.clone(),
                         ..Default::default()
                     };
 
                     let crawl_result = CrawlResult {
                         timestamp: Utc::now(),
-                        request: Some(current_req.clone()),
+                        request: Some(final_req),
                         response: Some(nav_resp),
+                        tls_data,
                         api_type,
                         technologies,
                         secrets,
@@ -341,6 +478,11 @@ impl Engine for HeadlessEngine {
                     };
 
                     let _ = sender.send(crawl_result);
+
+                    // Skip navigation discovery on unsolved CAPTCHA challenge pages
+                    if headers_map.contains_key("x-katana-captcha-unsolved") {
+                        continue;
+                    }
 
                     let mut discovered =
                         parse_html_endpoints(&current_req.url, &body_text, current_req.depth);

@@ -16,9 +16,11 @@ pub use filters::{
     extract_parent_paths, is_cycle, is_logout_url, replace_all_query_param, CompactUrlFilter,
 };
 pub use knowledge::{classify_api_endpoint, ApiType, SecretFinding, SecretScanner};
-pub use navigation::{Form, Request, Response, Result};
+pub use navigation::{Form, Request, Response, Result, TlsData};
 pub use options::{CrawlerOptions, Options};
-pub use raw::{parse_raw_request_file, parse_raw_request_str};
+pub use raw::{
+    parse_raw_request_file, parse_raw_request_str, serialize_raw_request, serialize_raw_response,
+};
 pub use resume::CrawlCheckpoint;
 pub use scope::{FieldScope, ScopeManager};
 pub use storage::ResponseStorageManager;

@@ -121,6 +121,13 @@ async fn main() -> anyhow::Result<()> {
         proxy: args.proxy,
         tls_impersonate: args.tls_impersonate,
         tls_preset: args.tls_preset,
+        tls_data: args.tls_data,
+        omit_raw: args.omit_raw,
+        omit_body: args.omit_body,
+        match_regex: args.match_regex.clone(),
+        filter_regex: args.filter_regex.clone(),
+        captcha_solver_provider: args.captcha_solver_provider.clone(),
+        captcha_solver_api_key: args.captcha_solver_api_key.clone(),
         scan_secrets: args.scan_secrets,
         output_file: args.output.clone(),
         store_response: args.store_response || args.store_response_dir.is_some(),
@@ -144,7 +151,11 @@ async fn main() -> anyhow::Result<()> {
         args.silent,
         args.show_progress,
         args.output.as_deref(),
-    ));
+        args.omit_raw,
+        args.omit_body,
+        &args.match_regex,
+        &args.filter_regex,
+    )?);
     let (tx, mut rx) = mpsc::unbounded_channel();
 
     // Spawn output processor

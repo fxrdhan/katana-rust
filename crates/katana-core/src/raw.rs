@@ -71,6 +71,64 @@ pub fn parse_raw_request_file(path: &str, https: bool) -> anyhow::Result<Request
     parse_raw_request_str(&content, https)
 }
 
+/// Serializes a Request into RFC 7230 wire format.
+pub fn serialize_raw_request(req: &Request, extra_headers: &HashMap<String, String>) -> String {
+    let method = if req.method.is_empty() {
+        "GET"
+    } else {
+        req.method.as_str()
+    };
+    let (host_str, path_and_query) = if let Ok(u) = url::Url::parse(&req.url) {
+        let h = if let Some(port) = u.port() {
+            format!("{}:{}", u.host_str().unwrap_or(""), port)
+        } else {
+            u.host_str().unwrap_or("").to_string()
+        };
+        let pq = match u.query() {
+            Some(q) => format!("{}?{}", u.path(), q),
+            None => u.path().to_string(),
+        };
+        (h, if pq.is_empty() { "/".to_string() } else { pq })
+    } else {
+        ("".to_string(), "/".to_string())
+    };
+
+    let mut out = format!("{} {} HTTP/1.1\r\n", method, path_and_query);
+    if !host_str.is_empty() {
+        out.push_str(&format!("Host: {}\r\n", host_str));
+    }
+    for (k, v) in extra_headers {
+        if !k.eq_ignore_ascii_case("host") {
+            out.push_str(&format!("{}: {}\r\n", k, v));
+        }
+    }
+    for (k, v) in &req.headers {
+        if !k.eq_ignore_ascii_case("host") && !extra_headers.contains_key(k) {
+            out.push_str(&format!("{}: {}\r\n", k, v));
+        }
+    }
+    out.push_str("\r\n");
+    if !req.body.is_empty() {
+        out.push_str(&req.body);
+    }
+    out
+}
+
+/// Serializes an HTTP response status, headers, and body into RFC 7230 wire format.
+pub fn serialize_raw_response(
+    status: u16,
+    headers: &HashMap<String, String>,
+    body: &str,
+) -> String {
+    let mut out = format!("HTTP/1.1 {}\r\n", status);
+    for (k, v) in headers {
+        out.push_str(&format!("{}: {}\r\n", k, v));
+    }
+    out.push_str("\r\n");
+    out.push_str(body);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,5 +154,35 @@ mod tests {
         assert_eq!(req.url, "http://api.target.local:8080/api/v1/auth");
         assert_eq!(req.headers.get("Content-Type").unwrap(), "application/json");
         assert_eq!(req.body, "{\"username\":\"admin\",\"password\":\"secret\"}");
+    }
+
+    #[test]
+    fn test_serialize_raw_request_and_response() {
+        let mut headers = HashMap::new();
+        headers.insert("Content-Type".to_string(), "application/json".to_string());
+        let req = Request {
+            method: "POST".to_string(),
+            url: "https://example.com/api/test?v=1".to_string(),
+            body: "{\"ping\":true}".to_string(),
+            headers,
+            ..Default::default()
+        };
+
+        let mut custom = HashMap::new();
+        custom.insert("X-Custom-Auth".to_string(), "token".to_string());
+
+        let raw_req = serialize_raw_request(&req, &custom);
+        assert!(raw_req.starts_with("POST /api/test?v=1 HTTP/1.1\r\n"));
+        assert!(raw_req.contains("Host: example.com\r\n"));
+        assert!(raw_req.contains("X-Custom-Auth: token\r\n"));
+        assert!(raw_req.contains("Content-Type: application/json\r\n"));
+        assert!(raw_req.ends_with("\r\n{\"ping\":true}"));
+
+        let mut resp_headers = HashMap::new();
+        resp_headers.insert("Server".to_string(), "nginx".to_string());
+        let raw_resp = serialize_raw_response(200, &resp_headers, "{\"pong\":true}");
+        assert!(raw_resp.starts_with("HTTP/1.1 200\r\n"));
+        assert!(raw_resp.contains("Server: nginx\r\n"));
+        assert!(raw_resp.ends_with("\r\n{\"pong\":true}"));
     }
 }

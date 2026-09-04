@@ -172,6 +172,38 @@ pub struct CliArgs {
     #[arg(long = "jsonl")]
     pub jsonl: bool,
 
+    /// Omit raw requests/responses from jsonl output (-or)
+    #[arg(long = "omit-raw", alias = "or")]
+    pub omit_raw: bool,
+
+    /// Omit response body from jsonl output (-ob)
+    #[arg(long = "omit-body", alias = "ob")]
+    pub omit_body: bool,
+
+    /// Regex or list of regexes to match on output url (-mr)
+    #[arg(long = "match-regex", alias = "mr")]
+    pub match_regex: Vec<String>,
+
+    /// Regex or list of regexes to filter on output url (-fr)
+    #[arg(long = "filter-regex", alias = "fr")]
+    pub filter_regex: Vec<String>,
+
+    /// Extract TLS/SSL certificate metadata and client fingerprints (-tls, --tls-data)
+    #[arg(long = "tls-data", alias = "tls")]
+    pub tls_data: bool,
+
+    /// Automated CAPTCHA solver provider, e.g. capsolver (-csp)
+    #[arg(long = "captcha-solver-provider", alias = "csp")]
+    pub captcha_solver_provider: Option<String>,
+
+    /// Automated CAPTCHA solver API key (-csk, --capsolver-key)
+    #[arg(
+        long = "captcha-solver-api-key",
+        alias = "csk",
+        visible_alias = "capsolver-key"
+    )]
+    pub captcha_solver_api_key: Option<String>,
+
     /// Silent mode - output only discovered endpoints, suppressing logs and progress (-silent, -s)
     #[arg(short = 's', long = "silent")]
     pub silent: bool,
@@ -185,23 +217,109 @@ pub struct CliArgs {
     pub verbose: bool,
 }
 
+/// Splits comma-separated regex patterns while preserving commas inside quantifiers `{n,m}` and sets `[a,b]`.
+pub fn split_regex_patterns(input: &str) -> Vec<String> {
+    let mut results = Vec::new();
+    let mut current = String::new();
+    let mut brace_depth: usize = 0;
+    let mut bracket_depth: usize = 0;
+    let mut escaped = false;
+
+    for ch in input.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+
+        match ch {
+            '\\' => {
+                current.push(ch);
+                escaped = true;
+            }
+            '{' => {
+                brace_depth += 1;
+                current.push(ch);
+            }
+            '}' => {
+                brace_depth = brace_depth.saturating_sub(1);
+                current.push(ch);
+            }
+            '[' => {
+                bracket_depth += 1;
+                current.push(ch);
+            }
+            ']' => {
+                bracket_depth = bracket_depth.saturating_sub(1);
+                current.push(ch);
+            }
+            ',' if brace_depth == 0 && bracket_depth == 0 => {
+                let trimmed = current.trim();
+                if !trimmed.is_empty() {
+                    results.push(trimmed.to_string());
+                }
+                current.clear();
+            }
+            _ => {
+                current.push(ch);
+            }
+        }
+    }
+
+    let trimmed = current.trim();
+    if !trimmed.is_empty() {
+        results.push(trimmed.to_string());
+    }
+
+    results
+}
+
 /// Normalizes CLI arguments so single-hyphen multi-character flags (e.g. -cs, -rl, -ct, -iqp)
-/// are cleanly mapped to double-hyphen long flags (--cs, --rl, --ct, --iqp) matching Katana Go CLI UX.
+/// are cleanly mapped to double-hyphen long flags (--cs, --rl, --ct, --iqp) matching Katana Go CLI UX,
+/// and decomposes comma-separated regex flags (-mr, -fr) without corrupting quantifier syntax.
 pub fn normalize_cli_args<I, T>(args: I) -> Vec<String>
 where
     I: IntoIterator<Item = T>,
     T: AsRef<str>,
 {
-    args.into_iter()
-        .map(|arg| {
-            let s = arg.as_ref();
-            if s.starts_with('-') && !s.starts_with("--") && s.len() > 2 {
-                format!("-{}", s)
+    let raw: Vec<String> = args.into_iter().map(|s| s.as_ref().to_string()).collect();
+    let mut normalized = Vec::new();
+    let mut i = 0;
+
+    while i < raw.len() {
+        let arg = &raw[i];
+        if (arg == "-mr"
+            || arg == "--mr"
+            || arg == "--match-regex"
+            || arg == "-fr"
+            || arg == "--fr"
+            || arg == "--filter-regex")
+            && i + 1 < raw.len()
+        {
+            let flag = if arg.starts_with("--") {
+                arg.clone()
             } else {
-                s.to_string()
+                format!("-{}", arg)
+            };
+            let val = &raw[i + 1];
+            let parts = split_regex_patterns(val);
+            for part in parts {
+                normalized.push(flag.clone());
+                normalized.push(part);
             }
-        })
-        .collect()
+            i += 2;
+            continue;
+        }
+
+        if arg.starts_with('-') && !arg.starts_with("--") && arg.len() > 2 {
+            normalized.push(format!("-{}", arg));
+        } else {
+            normalized.push(arg.clone());
+        }
+        i += 1;
+    }
+
+    normalized
 }
 
 #[cfg(test)]
@@ -275,5 +393,40 @@ mod tests {
                 "Cookie: session=abc, user=def"
             ]
         );
+    }
+
+    #[test]
+    fn test_cli_flags_extended_filtering_and_upstream_parity() {
+        let input = [
+            "katana",
+            "-u",
+            "https://example.com",
+            "-or",
+            "-ob",
+            "-mr",
+            ".*admin.*,.*api.*",
+            "-fr",
+            ".*logout.*",
+            "-tls",
+            "-csp",
+            "capsolver",
+            "-csk",
+            "CAP-1234567890",
+            "--jsonl",
+        ];
+        let normalized = normalize_cli_args(input);
+        let args = CliArgs::try_parse_from(normalized).unwrap();
+
+        assert!(args.omit_raw);
+        assert!(args.omit_body);
+        assert_eq!(args.match_regex, vec![".*admin.*", ".*api.*"]);
+        assert_eq!(args.filter_regex, vec![".*logout.*"]);
+        assert!(args.tls_data);
+        assert_eq!(args.captcha_solver_provider.as_deref(), Some("capsolver"));
+        assert_eq!(
+            args.captcha_solver_api_key.as_deref(),
+            Some("CAP-1234567890")
+        );
+        assert!(args.jsonl);
     }
 }

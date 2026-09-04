@@ -43,6 +43,7 @@ pub struct StandardEngine {
     rate_limiter_minute: Option<Arc<TokenBucketRateLimiter>>,
     active_queue: Arc<tokio::sync::Mutex<VecDeque<Request>>>,
     in_flight_requests: Arc<DashSet<String>>,
+    tls_extractor: Arc<crate::tls::TlsExtractor>,
 }
 
 fn store_response_to_disk(
@@ -147,6 +148,7 @@ impl StandardEngine {
             rate_limiter_minute,
             active_queue: Arc::new(tokio::sync::Mutex::new(VecDeque::new())),
             in_flight_requests: Arc::new(DashSet::new()),
+            tls_extractor: Arc::new(crate::tls::TlsExtractor::new()),
         })
     }
 
@@ -496,28 +498,58 @@ impl StandardEngine {
 
                 let technologies = katana_core::detect_technologies(&headers_map, &body_text);
 
+                let tls_data = if self.options.tls_data && current_req.url.starts_with("https://") {
+                    if let Ok(parsed_url) = Url::parse(&current_req.url) {
+                        if let Some(host_str) = parsed_url.host_str() {
+                            let port = parsed_url.port().unwrap_or(443);
+                            self.tls_extractor
+                                .extract_tls_data(
+                                    host_str,
+                                    port,
+                                    self.options.tls_preset.as_deref(),
+                                )
+                                .await
+                                .ok()
+                                .map(|arc| (*arc).clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let mut final_req = current_req.clone();
+                final_req.custom_fields = custom_fields;
+                final_req.raw = katana_core::raw::serialize_raw_request(
+                    &final_req,
+                    &self.options.custom_headers,
+                );
+
                 let nav_resp = Response {
                     depth: current_req.depth,
                     status_code: status,
-                    headers: headers_map,
+                    headers: headers_map.clone(),
                     content_length: body_text.len(),
                     root_hostname: current_req.root_hostname.clone(),
                     technologies: technologies.clone(),
                     forms,
                     body: body_text.clone(),
+                    raw: katana_core::raw::serialize_raw_response(status, &headers_map, &body_text),
                     stored_response_path: stored_path.unwrap_or_default(),
                     api_type: api_type.clone(),
                     secrets: secrets.clone(),
+                    tls_data: tls_data.clone(),
                     ..Default::default()
                 };
-
-                let mut final_req = current_req.clone();
-                final_req.custom_fields = custom_fields;
 
                 let crawl_result = CrawlResult {
                     timestamp: Utc::now(),
                     request: Some(final_req),
                     response: Some(nav_resp),
+                    tls_data,
                     api_type,
                     technologies,
                     secrets,
