@@ -73,8 +73,10 @@ impl StandardEngine {
         client_builder = crate::tls::apply_tls_configuration(client_builder, tls_preset);
 
         if let Some(proxy_str) = &options.proxy {
-            let rotator = crate::proxy::ProxyRotator::from_comma_separated(proxy_str);
-            if let Some(p) = rotator.next_reqwest_proxy() {
+            let rotator = Arc::new(crate::proxy::ProxyRotator::from_file_or_comma_separated(
+                proxy_str,
+            ));
+            if let Some(p) = crate::proxy::ProxyRotator::build_rotating_proxy(rotator) {
                 client_builder = client_builder.proxy(p);
             }
         }

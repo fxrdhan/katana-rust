@@ -13,6 +13,9 @@ lazy_static! {
     static ref SPA_BUNDLE_REGEX: Regex = Regex::new(
         r#"(?i)<script[^>]+src=["'][^"']*(?:react|vue|angular|svelte|next|nuxt|umi|chunk-vendors|runtime~main|main\.[0-9a-f]{8,}\.js)[^"']*["']"#
     ).unwrap();
+    static ref SCRIPT_STYLE_REGEX: Regex =
+        Regex::new(r#"(?is)<script\b[^>]*>.*?</script>|<style\b[^>]*>.*?</style>"#).unwrap();
+    static ref HTML_TAG_REGEX: Regex = Regex::new(r#"(?is)<[^>]+>"#).unwrap();
 }
 
 /// Evaluates whether a given HTML page represents a client-rendered Dynamic Single Page Application (SPA).
@@ -44,41 +47,12 @@ pub fn is_dynamic_spa(html: &str, content_type: &str) -> bool {
     false
 }
 
-/// Quick helper to strip HTML tags and measure text density
+/// Safely strips script, style, and HTML tags to measure raw visible text density without Unicode panics.
 fn strip_html_tags(html: &str) -> String {
-    let mut in_tag = false;
-    let mut in_script = false;
-    let mut in_style = false;
-    let mut out = String::with_capacity(html.len());
-
-    let lower = html.to_lowercase();
-    let chars: Vec<char> = html.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
-
-    while i < len {
-        if !in_tag && chars[i] == '<' {
-            in_tag = true;
-            if i + 7 < len && &lower[i..i + 7] == "<script" {
-                in_script = true;
-            } else if i + 6 < len && &lower[i..i + 6] == "<style" {
-                in_style = true;
-            } else if in_script && i + 9 <= len && &lower[i..i + 9] == "</script>" {
-                in_script = false;
-                i += 8;
-            } else if in_style && i + 8 <= len && &lower[i..i + 8] == "</style>" {
-                in_style = false;
-                i += 7;
-            }
-        } else if in_tag && chars[i] == '>' {
-            in_tag = false;
-        } else if !in_tag && !in_script && !in_style {
-            out.push(chars[i]);
-        }
-        i += 1;
-    }
-
-    out
+    let without_scripts = SCRIPT_STYLE_REGEX.replace_all(html, " ");
+    HTML_TAG_REGEX
+        .replace_all(&without_scripts, " ")
+        .to_string()
 }
 
 #[cfg(test)]
@@ -147,5 +121,28 @@ mod tests {
             </html>
         "#;
         assert!(!is_dynamic_spa(static_html, "text/html"));
+    }
+
+    #[test]
+    fn test_spa_detection_with_unicode_and_emojis() {
+        let unicode_spa = r#"
+            <!DOCTYPE html>
+            <html>
+            <head><title>Unicode 🚀 日本語</title></head>
+            <body>
+                <noscript>JavaScriptが必要です need to enable JavaScript</noscript>
+                <div id="root"></div>
+                <script src="/static/js/bundle.js"></script>
+            </body>
+            </html>
+        "#;
+        assert!(is_dynamic_spa(unicode_spa, "text/html"));
+    }
+
+    #[test]
+    fn test_strip_html_tags_with_unicode() {
+        let html = "A😀<script src=\"app.js\">var x = 1;</script><p>Text</p>";
+        let stripped = strip_html_tags(html);
+        assert!(stripped.contains("Text"));
     }
 }

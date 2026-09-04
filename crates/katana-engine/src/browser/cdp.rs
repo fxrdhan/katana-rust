@@ -133,6 +133,9 @@ impl CdpSession {
                     }
                 }
             }
+            // Clear pending responses to fail fast on disconnect
+            let mut pending = pending_resp_clone.lock().await;
+            pending.clear();
         });
 
         Ok(Self {
@@ -274,12 +277,32 @@ impl BrowserLifecycleManager {
         &self.browser_ws_url
     }
 
+    pub fn http_endpoint(&self) -> &str {
+        &self.http_endpoint
+    }
+
     /// Launches a system Chrome browser or attaches to an existing CDP WebSocket/HTTP endpoint.
     pub fn new(options: &ChromeLaunchOptions, max_requests_per_tab: usize) -> anyhow::Result<Self> {
         if let Some(ws_url) = &options.chrome_ws_url {
+            let http_endpoint = if ws_url.starts_with("http://") || ws_url.starts_with("https://") {
+                ws_url.clone()
+            } else {
+                let is_secure = ws_url.starts_with("wss://");
+                let stripped = ws_url
+                    .strip_prefix("wss://")
+                    .or_else(|| ws_url.strip_prefix("ws://"))
+                    .unwrap_or(ws_url);
+                let host_port = stripped.split('/').next().unwrap_or("127.0.0.1:9222");
+                format!(
+                    "{}://{}",
+                    if is_secure { "https" } else { "http" },
+                    host_port
+                )
+            };
+
             return Ok(Self {
                 child_process: None,
-                http_endpoint: String::new(),
+                http_endpoint,
                 browser_ws_url: ws_url.clone(),
                 active_tab_id: None,
                 tab_request_count: 0,
@@ -351,6 +374,13 @@ impl BrowserLifecycleManager {
 
     /// Acquires a clean or recycled CDP tab session.
     pub async fn acquire_tab_session(&mut self) -> anyhow::Result<CdpSession> {
+        // If a direct page WebSocket URL was provided (e.g. ws://.../devtools/page/<id>), connect directly
+        if self.browser_ws_url.contains("/devtools/page/") {
+            let session = CdpSession::connect(&self.browser_ws_url).await?;
+            session.init_page(self.stealth).await?;
+            return Ok(session);
+        }
+
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()?;
@@ -371,11 +401,11 @@ impl BrowserLifecycleManager {
         // Create new tab if none active
         let tab_ws_url = if let Some(tab_id) = &self.active_tab_id {
             self.tab_request_count += 1;
-            format!(
-                "ws://{}/devtools/page/{}",
-                self.http_endpoint.trim_start_matches("http://"),
-                tab_id
-            )
+            let stripped_endpoint = self
+                .http_endpoint
+                .trim_start_matches("https://")
+                .trim_start_matches("http://");
+            format!("ws://{}/devtools/page/{}", stripped_endpoint, tab_id)
         } else {
             let new_url = format!("{}/json/new?about:blank", self.http_endpoint);
             let resp = client.put(&new_url).send().await?.json::<Value>().await?;
@@ -455,5 +485,6 @@ mod tests {
             mgr.browser_ws_url(),
             "ws://127.0.0.1:9222/devtools/browser/test-id"
         );
+        assert_eq!(mgr.http_endpoint(), "http://127.0.0.1:9222");
     }
 }

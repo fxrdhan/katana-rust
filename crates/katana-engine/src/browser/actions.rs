@@ -28,23 +28,33 @@ pub fn get_field_synthetic_value(field_name: &str, field_type: &str) -> &'static
 /// Generates a JavaScript snippet to populate and automatically submit an HTML form.
 pub fn generate_form_fill_script(form: &Form) -> String {
     let mut script = String::from("(() => {\n");
-    script.push_str("    const form = document.querySelector('form');\n");
+    let form_selector = if !form.action.is_empty() {
+        format!("form[action*=\"{}\"]", form.action.replace('"', "\\\""))
+    } else {
+        "form".to_string()
+    };
+    script.push_str(&format!(
+        "    const form = document.querySelector('{}') || document.querySelector('form');\n",
+        form_selector
+    ));
     script.push_str("    if (!form) return;\n");
 
-    for param in &form.parameters {
+    for (idx, param) in form.parameters.iter().enumerate() {
         let val = get_field_synthetic_value(param, "text");
+        let safe_name = param.replace('"', "\\\"");
         script.push_str(&format!(
-            "    const input_{param} = form.querySelector('[name=\"{param}\"]');\n",
-            param = param
+            "    const input_{idx} = form.querySelector('[name=\"{safe_name}\"]');\n",
+            idx = idx,
+            safe_name = safe_name
         ));
         script.push_str(&format!(
-            "    if (input_{param}) {{ input_{param}.value = \"{val}\"; }}\n",
-            param = param,
+            "    if (input_{idx}) {{ input_{idx}.value = \"{val}\"; }}\n",
+            idx = idx,
             val = val
         ));
     }
 
-    script.push_str("    form.submit();\n");
+    script.push_str("    try { form.submit(); } catch(e) {}\n");
     script.push_str("})();\n");
     script
 }
@@ -101,5 +111,30 @@ mod tests {
         assert!(script.contains("admin"));
         assert!(script.contains("Password123!"));
         assert!(script.contains("form.submit()"));
+    }
+
+    #[test]
+    fn test_generate_form_fill_script_with_special_characters() {
+        let form = Form {
+            action: "/update-profile".to_string(),
+            method: "POST".to_string(),
+            enctype: "".to_string(),
+            parameters: vec![
+                "csrf-token".to_string(),
+                "user[email]".to_string(),
+                "phone.number".to_string(),
+            ],
+        };
+
+        let script = generate_form_fill_script(&form);
+        assert!(script.contains("name=\"csrf-token\""));
+        assert!(script.contains("name=\"user[email]\""));
+        assert!(script.contains("name=\"phone.number\""));
+        assert!(script.contains("input_0"));
+        assert!(script.contains("input_1"));
+        assert!(script.contains("input_2"));
+        // Confirm no invalid JS identifier names like "input_csrf-token"
+        assert!(!script.contains("input_csrf-token"));
+        assert!(!script.contains("input_user[email]"));
     }
 }
