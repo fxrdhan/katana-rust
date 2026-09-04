@@ -139,6 +139,8 @@ pub struct Result {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_type: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub technologies: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub secrets: Vec<SecretFinding>,
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub error: String,
