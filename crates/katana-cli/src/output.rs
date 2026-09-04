@@ -3,7 +3,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 use katana_core::navigation::Result as CrawlResult;
 use regex::Regex;
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -43,14 +44,40 @@ impl OutputWriter {
 
         let mut match_regex = Vec::new();
         for pat in match_patterns {
-            let re = Regex::new(pat)?;
-            match_regex.push(re);
+            let p = Path::new(pat);
+            if p.is_file() {
+                let file = File::open(p)?;
+                let reader = BufReader::new(file);
+                for line in reader.lines() {
+                    let line_str = line?.trim().to_string();
+                    if !line_str.is_empty() {
+                        let re = Regex::new(&line_str)?;
+                        match_regex.push(re);
+                    }
+                }
+            } else {
+                let re = Regex::new(pat)?;
+                match_regex.push(re);
+            }
         }
 
         let mut filter_regex = Vec::new();
         for pat in filter_patterns {
-            let re = Regex::new(pat)?;
-            filter_regex.push(re);
+            let p = Path::new(pat);
+            if p.is_file() {
+                let file = File::open(p)?;
+                let reader = BufReader::new(file);
+                for line in reader.lines() {
+                    let line_str = line?.trim().to_string();
+                    if !line_str.is_empty() {
+                        let re = Regex::new(&line_str)?;
+                        filter_regex.push(re);
+                    }
+                }
+            } else {
+                let re = Regex::new(pat)?;
+                filter_regex.push(re);
+            }
         }
 
         let progress_bar = if show_progress && !silent && !jsonl {
@@ -338,5 +365,35 @@ mod tests {
         assert!(output_res.request.as_ref().unwrap().raw.is_empty());
         assert!(output_res.response.as_ref().unwrap().raw.is_empty());
         assert!(output_res.response.as_ref().unwrap().body.is_empty());
+    }
+
+    #[test]
+    fn test_output_writer_regex_with_commas_and_file_patterns() {
+        let temp_dir = std::env::temp_dir();
+        let pattern_file = temp_dir.join("test_patterns.txt");
+        std::fs::write(&pattern_file, ".*logout.*\n.*admin/v[0-9]{1,2}.*\n").unwrap();
+
+        let writer = OutputWriter::new(
+            false,
+            false,
+            false,
+            None,
+            false,
+            false,
+            &["^https://example\\.com/api/[a-z]{2,5}$".to_string()],
+            &[pattern_file.to_string_lossy().to_string()],
+        )
+        .expect("should initialize with comma regexes and file patterns");
+
+        assert_eq!(writer.match_regex.len(), 1);
+        assert_eq!(writer.filter_regex.len(), 2);
+
+        assert!(writer.match_regex[0].is_match("https://example.com/api/users"));
+        assert!(!writer.match_regex[0].is_match("https://example.com/api/toolongpath"));
+
+        assert!(writer.filter_regex[0].is_match("https://example.com/logout"));
+        assert!(writer.filter_regex[1].is_match("https://example.com/admin/v12/dashboard"));
+
+        let _ = std::fs::remove_file(pattern_file);
     }
 }
