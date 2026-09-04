@@ -34,11 +34,28 @@ impl HeadlessEngine {
         let state_graph = Arc::new(StateGraph::new(2));
         let backoff = Arc::new(HostBackoffManager::default());
         let tls_extractor = Arc::new(crate::tls::TlsExtractor::new());
-        let captcha_solver: Option<Arc<dyn crate::captcha::CaptchaSolver>> =
-            options.captcha_solver_api_key.as_ref().map(|k| {
-                Arc::new(crate::captcha::CapsolverProvider::new(k.clone()))
-                    as Arc<dyn crate::captcha::CaptchaSolver>
-            });
+        let captcha_solver: Option<Arc<dyn crate::captcha::CaptchaSolver>> = if let Some(k) =
+            options.captcha_solver_api_key.as_ref()
+        {
+            let provider = options
+                .captcha_solver_provider
+                .as_deref()
+                .unwrap_or("capsolver");
+            match provider.to_lowercase().as_str() {
+                "capsolver" => Some(Arc::new(crate::captcha::CapsolverProvider::new(k.clone()))
+                    as Arc<dyn crate::captcha::CaptchaSolver>),
+                other => {
+                    anyhow::bail!("unsupported captcha solver provider: {}", other);
+                }
+            }
+        } else if let Some(provider) = options.captcha_solver_provider.as_deref() {
+            anyhow::bail!(
+                    "captcha solver provider '{}' specified without api key (-csk, --captcha-solver-api-key)",
+                    provider
+                );
+        } else {
+            None
+        };
 
         let mut client_builder = Client::builder()
             .timeout(Duration::from_secs(options.timeout))
@@ -219,6 +236,7 @@ impl Engine for HeadlessEngine {
                                     );
                                 }
 
+                                let mut solved = false;
                                 if let Some(captcha_info) = &live_captcha {
                                     info!(
                                         "Real-time CAPTCHA challenge detected on {}: provider={} sitekey={}",
@@ -240,34 +258,56 @@ impl Engine for HeadlessEngine {
                                                 let _ = session.evaluate(&inject_js).await;
                                                 tokio::time::sleep(Duration::from_millis(1500))
                                                     .await;
+                                                solved = true;
                                             }
                                             Err(e) => {
                                                 warn!("CAPTCHA solving attempt failed: {}", e);
                                             }
                                         }
+                                    } else {
+                                        warn!(
+                                            "CAPTCHA challenge detected on {} but no solver configured; skipping navigation discovery on challenge widget",
+                                            current_req.url
+                                        );
                                     }
                                 }
 
-                                // Automated form filling
-                                if self.options.automatic_form_fill {
-                                    let body_snapshot =
+                                if live_captcha.is_some() && !solved {
+                                    let rendered_html =
                                         session.get_html().await.unwrap_or_default();
-                                    let detected_forms = parse_forms(&body_snapshot);
-                                    let _ = session.fill_forms(&detected_forms).await;
+                                    let mut headers = HashMap::new();
+                                    headers.insert(
+                                        "content-type".to_string(),
+                                        "text/html; charset=utf-8".to_string(),
+                                    );
+                                    headers.insert(
+                                        "x-katana-captcha-unsolved".to_string(),
+                                        "true".to_string(),
+                                    );
+                                    Ok((403, headers, rendered_html))
+                                } else {
+                                    // Automated form filling
+                                    if self.options.automatic_form_fill {
+                                        let body_snapshot =
+                                            session.get_html().await.unwrap_or_default();
+                                        let detected_forms = parse_forms(&body_snapshot);
+                                        let _ = session.fill_forms(&detected_forms).await;
+                                    }
+
+                                    // Interactive DOM clicking
+                                    let _ = session.click_interactive_elements().await;
+
+                                    // Final rendered DOM outer HTML
+                                    let rendered_html =
+                                        session.get_html().await.unwrap_or_default();
+                                    let mut headers = HashMap::new();
+                                    headers.insert(
+                                        "content-type".to_string(),
+                                        "text/html; charset=utf-8".to_string(),
+                                    );
+
+                                    Ok((200, headers, rendered_html))
                                 }
-
-                                // Interactive DOM clicking
-                                let _ = session.click_interactive_elements().await;
-
-                                // Final rendered DOM outer HTML
-                                let rendered_html = session.get_html().await.unwrap_or_default();
-                                let mut headers = HashMap::new();
-                                headers.insert(
-                                    "content-type".to_string(),
-                                    "text/html; charset=utf-8".to_string(),
-                                );
-
-                                Ok((200, headers, rendered_html))
                             } else {
                                 mgr.recycle_active_tab().await;
                                 // Fallback to HTTP client on CDP navigation error
@@ -399,15 +439,26 @@ impl Engine for HeadlessEngine {
                         None
                     };
 
+                    let mut final_req = current_req.clone();
+                    final_req.raw = katana_core::raw::serialize_raw_request(
+                        &final_req,
+                        &self.options.custom_headers,
+                    );
+
                     let nav_resp = Response {
                         depth: current_req.depth,
                         status_code: status,
-                        headers: headers_map,
+                        headers: headers_map.clone(),
                         content_length: body_text.len(),
                         root_hostname: root_hostname.clone(),
                         technologies: technologies.clone(),
                         forms: forms.clone(),
                         body: body_text.clone(),
+                        raw: katana_core::raw::serialize_raw_response(
+                            status,
+                            &headers_map,
+                            &body_text,
+                        ),
                         stored_response_path: stored_path.unwrap_or_default(),
                         api_type: api_type.clone(),
                         secrets: secrets.clone(),
@@ -417,7 +468,7 @@ impl Engine for HeadlessEngine {
 
                     let crawl_result = CrawlResult {
                         timestamp: Utc::now(),
-                        request: Some(current_req.clone()),
+                        request: Some(final_req),
                         response: Some(nav_resp),
                         tls_data,
                         api_type,
@@ -427,6 +478,11 @@ impl Engine for HeadlessEngine {
                     };
 
                     let _ = sender.send(crawl_result);
+
+                    // Skip navigation discovery on unsolved CAPTCHA challenge pages
+                    if headers_map.contains_key("x-katana-captcha-unsolved") {
+                        continue;
+                    }
 
                     let mut discovered =
                         parse_html_endpoints(&current_req.url, &body_text, current_req.depth);

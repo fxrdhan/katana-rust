@@ -521,24 +521,29 @@ impl StandardEngine {
                     None
                 };
 
+                let mut final_req = current_req.clone();
+                final_req.custom_fields = custom_fields;
+                final_req.raw = katana_core::raw::serialize_raw_request(
+                    &final_req,
+                    &self.options.custom_headers,
+                );
+
                 let nav_resp = Response {
                     depth: current_req.depth,
                     status_code: status,
-                    headers: headers_map,
+                    headers: headers_map.clone(),
                     content_length: body_text.len(),
                     root_hostname: current_req.root_hostname.clone(),
                     technologies: technologies.clone(),
                     forms,
                     body: body_text.clone(),
+                    raw: katana_core::raw::serialize_raw_response(status, &headers_map, &body_text),
                     stored_response_path: stored_path.unwrap_or_default(),
                     api_type: api_type.clone(),
                     secrets: secrets.clone(),
                     tls_data: tls_data.clone(),
                     ..Default::default()
                 };
-
-                let mut final_req = current_req.clone();
-                final_req.custom_fields = custom_fields;
 
                 let crawl_result = CrawlResult {
                     timestamp: Utc::now(),

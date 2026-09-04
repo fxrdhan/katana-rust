@@ -35,13 +35,13 @@ pub struct CaptchaInfo {
 
 lazy_static::lazy_static! {
     static ref RE_HCAPTCHA_SITEKEY: Regex = Regex::new(
-        r#"(?i)<[^>]*class=["'][^"']*h-captcha[^"']*["'][^>]*data-sitekey=["']([^"']+)["']"#
+        r#"(?i)<[^>]*(?:class=["'][^"']*\bh-captcha\b[^"']*["'][^>]*data-sitekey=["']([^"']+)["']|data-sitekey=["']([^"']+)["'][^>]*class=["'][^"']*\bh-captcha\b[^"']*["'])"#
     ).unwrap();
     static ref RE_TURNSTILE_SITEKEY: Regex = Regex::new(
-        r#"(?i)<[^>]*class=["'][^"']*cf-turnstile[^"']*["'][^>]*data-sitekey=["']([^"']+)["']"#
+        r#"(?i)<[^>]*(?:class=["'][^"']*\bcf-turnstile\b[^"']*["'][^>]*data-sitekey=["']([^"']+)["']|data-sitekey=["']([^"']+)["'][^>]*class=["'][^"']*\bcf-turnstile\b[^"']*["'])"#
     ).unwrap();
     static ref RE_RECAPTCHA_SITEKEY: Regex = Regex::new(
-        r#"(?i)<[^>]*class=["'][^"']*g-recaptcha[^"']*["'][^>]*data-sitekey=["']([^"']+)["']"#
+        r#"(?i)<[^>]*(?:class=["'][^"']*\bg-recaptcha\b[^"']*["'][^>]*data-sitekey=["']([^"']+)["']|data-sitekey=["']([^"']+)["'][^>]*class=["'][^"']*\bg-recaptcha\b[^"']*["'])"#
     ).unwrap();
     static ref RE_RECAPTCHA_V3_SCRIPT: Regex = Regex::new(
         r#"(?i)https://www\.google\.com/recaptcha/(api|enterprise)\.js\?render=([a-zA-Z0-9_-]+)"#
@@ -55,7 +55,7 @@ lazy_static::lazy_static! {
 pub fn detect_captcha_in_html(html: &str, page_url: &str) -> Option<CaptchaInfo> {
     // 1. hCaptcha check
     if let Some(caps) = RE_HCAPTCHA_SITEKEY.captures(html) {
-        if let Some(sitekey) = caps.get(1) {
+        if let Some(sitekey) = caps.get(1).or_else(|| caps.get(2)) {
             return Some(CaptchaInfo {
                 provider: CaptchaProvider::HCaptcha,
                 sitekey: sitekey.as_str().to_string(),
@@ -67,7 +67,7 @@ pub fn detect_captcha_in_html(html: &str, page_url: &str) -> Option<CaptchaInfo>
 
     // 2. Cloudflare Turnstile check
     if let Some(caps) = RE_TURNSTILE_SITEKEY.captures(html) {
-        if let Some(sitekey) = caps.get(1) {
+        if let Some(sitekey) = caps.get(1).or_else(|| caps.get(2)) {
             return Some(CaptchaInfo {
                 provider: CaptchaProvider::Turnstile,
                 sitekey: sitekey.as_str().to_string(),
@@ -100,7 +100,7 @@ pub fn detect_captcha_in_html(html: &str, page_url: &str) -> Option<CaptchaInfo>
     // 4. reCAPTCHA v2 / Enterprise badge check
     let is_enterprise = html.contains("recaptcha/enterprise.js");
     if let Some(caps) = RE_RECAPTCHA_SITEKEY.captures(html) {
-        if let Some(sitekey) = caps.get(1) {
+        if let Some(sitekey) = caps.get(1).or_else(|| caps.get(2)) {
             return Some(CaptchaInfo {
                 provider: if is_enterprise {
                     CaptchaProvider::RecaptchaV2Enterprise
@@ -208,6 +208,19 @@ mod tests {
         let info = detect_captcha_in_html(html_recaptcha_v3, "https://example.com").unwrap();
         assert_eq!(info.provider, CaptchaProvider::RecaptchaV3);
         assert_eq!(info.sitekey, "6Le-wvkSAAAAAPBMRTvw0Q4Muexq9bi0DJwx_mJ-");
+
+        // Test inverted attribute order (data-sitekey before class, extra attributes)
+        let html_inverted_turnstile = r#"<div id="turnstile-widget" data-sitekey="0x4AAAAAAABcdef99999" class="cf-turnstile"></div>"#;
+        let info_turn =
+            detect_captcha_in_html(html_inverted_turnstile, "https://example.com").unwrap();
+        assert_eq!(info_turn.provider, CaptchaProvider::Turnstile);
+        assert_eq!(info_turn.sitekey, "0x4AAAAAAABcdef99999");
+
+        let html_inverted_hcap =
+            r#"<div data-sitekey="hcap-key-12345" class="some-class h-captcha other-class"></div>"#;
+        let info_hcap = detect_captcha_in_html(html_inverted_hcap, "https://example.com").unwrap();
+        assert_eq!(info_hcap.provider, CaptchaProvider::HCaptcha);
+        assert_eq!(info_hcap.sitekey, "hcap-key-12345");
     }
 
     #[test]

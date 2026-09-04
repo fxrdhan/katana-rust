@@ -295,12 +295,17 @@ impl TlsExtractor {
         port: u16,
         preset: Option<&str>,
     ) -> anyhow::Result<Arc<TlsData>> {
-        let cache_key = format!("{}:{}", host, port);
+        let clean_host = host.trim_matches(|c| c == '[' || c == ']');
+        let cache_key = format!("{}:{}", clean_host, port);
         if let Some(cached) = self.cache.get(&cache_key) {
             return Ok(Arc::clone(&cached));
         }
 
-        let addr = format!("{}:{}", host, port);
+        let addr = if clean_host.contains(':') {
+            format!("[{}]:{}", clean_host, port)
+        } else {
+            format!("{}:{}", clean_host, port)
+        };
         let stream = tokio::time::timeout(
             Duration::from_secs(5),
             tokio::net::TcpStream::connect(&addr),
@@ -322,7 +327,7 @@ impl TlsExtractor {
         .with_no_client_auth();
 
         let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
-        let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
+        let server_name = rustls::pki_types::ServerName::try_from(clean_host.to_string())
             .map_err(|e| anyhow::anyhow!("Invalid server name: {}", e))?;
 
         let tls_stream = tokio::time::timeout(
