@@ -21,7 +21,13 @@ async fn main() -> anyhow::Result<()> {
     let normalized = flags::normalize_cli_args(raw_args);
     let args = CliArgs::parse_from(normalized);
 
-    let log_level = if args.verbose { "debug" } else { "info" };
+    let log_level = if args.silent {
+        "off"
+    } else if args.verbose {
+        "debug"
+    } else {
+        "info"
+    };
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(log_level))
         .with(tracing_subscriber::fmt::layer())
@@ -133,14 +139,21 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(StandardEngine::new(options)?)
     };
 
-    let writer = OutputWriter::new(args.jsonl, args.output.as_deref());
+    let writer = Arc::new(OutputWriter::new(
+        args.jsonl,
+        args.silent,
+        args.show_progress,
+        args.output.as_deref(),
+    ));
     let (tx, mut rx) = mpsc::unbounded_channel();
 
     // Spawn output processor
+    let writer_clone = Arc::clone(&writer);
     let output_handle = tokio::spawn(async move {
         while let Some(res) = rx.recv().await {
-            writer.write_result(&res);
+            writer_clone.write_result(&res);
         }
+        writer_clone.finish();
     });
 
     let resume_filename = args

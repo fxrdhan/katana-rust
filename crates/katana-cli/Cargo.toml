@@ -24,3 +24,4 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 url = { workspace = true }
 mimalloc = { workspace = true }
+indicatif = { workspace = true }

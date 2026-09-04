@@ -172,6 +172,14 @@ pub struct CliArgs {
     #[arg(long = "jsonl")]
     pub jsonl: bool,
 
+    /// Silent mode - output only discovered endpoints, suppressing logs and progress (-silent, -s)
+    #[arg(short = 's', long = "silent")]
+    pub silent: bool,
+
+    /// Show real-time crawl progress bar and telemetry metrics
+    #[arg(long = "show-progress", alias = "progress")]
+    pub show_progress: bool,
+
     /// Enable verbose debug logging
     #[arg(short = 'v', long = "verbose")]
     pub verbose: bool,
