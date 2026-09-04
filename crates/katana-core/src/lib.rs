@@ -18,7 +18,9 @@ pub use filters::{
 pub use knowledge::{classify_api_endpoint, ApiType, SecretFinding, SecretScanner};
 pub use navigation::{Form, Request, Response, Result, TlsData};
 pub use options::{CrawlerOptions, Options};
-pub use raw::{parse_raw_request_file, parse_raw_request_str};
+pub use raw::{
+    parse_raw_request_file, parse_raw_request_str, serialize_raw_request, serialize_raw_response,
+};
 pub use resume::CrawlCheckpoint;
 pub use scope::{FieldScope, ScopeManager};
 pub use storage::ResponseStorageManager;
