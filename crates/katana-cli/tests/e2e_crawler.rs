@@ -280,3 +280,101 @@ async fn test_e2e_raw_request_and_checkpoint() {
     let _ = std::fs::remove_file(temp_cp_file);
     server_handle.abort();
 }
+
+#[tokio::test]
+async fn test_e2e_concurrency_and_headers_dispatcher() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let base_url = format!("http://127.0.0.1:{}", port);
+
+    let server_handle = tokio::spawn(async move {
+        loop {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let n = match socket.read(&mut buf).await {
+                        Ok(n) if n > 0 => n,
+                        _ => return,
+                    };
+                    let req_str = String::from_utf8_lossy(&buf[..n]);
+                    let path = req_str
+                        .lines()
+                        .next()
+                        .and_then(|line| line.split_whitespace().nth(1))
+                        .unwrap_or("/");
+
+                    let has_header = req_str.contains("x-custom-test: katana-pool");
+
+                    let (status, body) = match path {
+                        "/" => (
+                            "200 OK",
+                            r#"<html><body>
+                                <a href="/item1">Item 1</a>
+                                <a href="/item2">Item 2</a>
+                                <a href="/item3">Item 3</a>
+                                <a href="/item4">Item 4</a>
+                            </body></html>"#,
+                        ),
+                        "/item1" | "/item2" | "/item3" | "/item4" => {
+                            if has_header {
+                                ("200 OK", "<html><body>Header Verified</body></html>")
+                            } else {
+                                ("400 Bad Request", "Missing header")
+                            }
+                        }
+                        _ => ("404 Not Found", "Not Found"),
+                    };
+
+                    let response = format!(
+                        "HTTP/1.1 {}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        status,
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                });
+            }
+        }
+    });
+
+    let mut custom_headers = std::collections::HashMap::new();
+    custom_headers.insert("x-custom-test".to_string(), "katana-pool".to_string());
+
+    let options = Options {
+        urls: vec![base_url.clone()],
+        max_depth: 2,
+        concurrency: 4,
+        parallelism: 2,
+        timeout: 5,
+        custom_headers,
+        ..Default::default()
+    };
+
+    let engine = StandardEngine::new(options).unwrap();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+
+    let root = base_url.clone();
+    let crawl_handle = tokio::spawn(async move {
+        engine.crawl(&root, tx).await.unwrap();
+    });
+
+    let mut successful_urls = HashSet::new();
+    while let Some(res) = rx.recv().await {
+        if let Some(resp) = res.response {
+            if resp.status_code == 200 {
+                if let Some(req) = res.request {
+                    successful_urls.insert(req.url);
+                }
+            }
+        }
+    }
+
+    crawl_handle.await.unwrap();
+    server_handle.abort();
+
+    assert!(successful_urls.contains(&base_url));
+    assert!(successful_urls.contains(&format!("{}/item1", base_url)));
+    assert!(successful_urls.contains(&format!("{}/item2", base_url)));
+    assert!(successful_urls.contains(&format!("{}/item3", base_url)));
+    assert!(successful_urls.contains(&format!("{}/item4", base_url)));
+}

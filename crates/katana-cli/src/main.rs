@@ -12,9 +12,14 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let args = CliArgs::parse();
+    let raw_args: Vec<String> = std::env::args().collect();
+    let normalized = flags::normalize_cli_args(raw_args);
+    let args = CliArgs::parse_from(normalized);
 
     let log_level = if args.verbose { "debug" } else { "info" };
     tracing_subscriber::registry()
@@ -57,12 +62,42 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
+    let mut custom_headers = std::collections::HashMap::new();
+    for h in &args.headers {
+        if let Some((k, v)) = h.split_once(':') {
+            custom_headers.insert(k.trim().to_string(), v.trim().to_string());
+        }
+    }
+
+    let crawl_duration = args.crawl_duration.as_deref().and_then(|d| {
+        let d = d.trim();
+        if let Some(s) = d.strip_suffix('s') {
+            s.parse::<u64>().ok()
+        } else if let Some(m) = d.strip_suffix('m') {
+            m.parse::<u64>().ok().map(|v| v * 60)
+        } else if let Some(h) = d.strip_suffix('h') {
+            h.parse::<u64>().ok().map(|v| v * 3600)
+        } else if let Some(day) = d.strip_suffix('d') {
+            day.parse::<u64>().ok().map(|v| v * 86400)
+        } else {
+            d.parse::<u64>().ok()
+        }
+    });
+
     let options = Options {
         urls: target_urls.clone(),
         max_depth: args.depth,
+        crawl_duration,
         concurrency: args.concurrency,
-        timeout: args.timeout,
+        parallelism: args.parallelism,
         delay: args.delay,
+        rate_limit: args.rate_limit,
+        rate_limit_minute: args.rate_limit_minute,
+        scope: args.crawl_scope,
+        out_of_scope: args.crawl_out_scope,
+        field_scope: args.field_scope,
+        no_scope: args.no_scope,
+        custom_headers,
         headless: args.headless,
         headless_hybrid: args.headless_hybrid,
         system_chrome: args.system_chrome,
@@ -106,10 +141,23 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    let par_semaphore = Arc::new(tokio::sync::Semaphore::new(args.parallelism.max(1)));
+    let mut join_handles = Vec::new();
+
     for target in target_urls {
-        if let Err(e) = engine.crawl(&target, tx.clone()).await {
-            eprintln!("Crawl error for {}: {}", target, e);
-        }
+        let permit = par_semaphore.clone().acquire_owned().await?;
+        let engine_clone = engine.clone();
+        let tx_clone = tx.clone();
+        join_handles.push(tokio::spawn(async move {
+            let _permit = permit;
+            if let Err(e) = engine_clone.crawl(&target, tx_clone).await {
+                eprintln!("Crawl error for {}: {}", target, e);
+            }
+        }));
+    }
+
+    for handle in join_handles {
+        let _ = handle.await;
     }
 
     drop(tx);

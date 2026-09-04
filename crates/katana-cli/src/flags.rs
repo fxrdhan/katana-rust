@@ -36,12 +36,48 @@ pub struct CliArgs {
     #[arg(short = 't', long = "timeout", default_value_t = 10)]
     pub timeout: u64,
 
-    /// Request delay between requests in seconds
-    #[arg(short = 'p', long = "delay", default_value_t = 0)]
+    /// Number of concurrent inputs to process (-p, --parallelism)
+    #[arg(short = 'p', long = "parallelism", default_value_t = 10)]
+    pub parallelism: usize,
+
+    /// Request delay between requests in seconds (-rd, --delay)
+    #[arg(long = "delay", alias = "rd", default_value_t = 0)]
     pub delay: u64,
 
+    /// Custom header/cookie to include in all HTTP requests in header:value format (-H)
+    #[arg(short = 'H', long = "headers")]
+    pub headers: Vec<String>,
+
+    /// Maximum duration to crawl target in seconds or duration format like 10s, 5m (-ct)
+    #[arg(long = "crawl-duration", alias = "ct")]
+    pub crawl_duration: Option<String>,
+
+    /// Maximum requests to send per second (-rl)
+    #[arg(long = "rate-limit", alias = "rl", default_value_t = 150)]
+    pub rate_limit: usize,
+
+    /// Maximum requests to send per minute (-rlm)
+    #[arg(long = "rate-limit-minute", alias = "rlm", default_value_t = 0)]
+    pub rate_limit_minute: usize,
+
+    /// In-scope URL regex to be followed by crawler (-cs)
+    #[arg(long = "crawl-scope", alias = "cs", value_delimiter = ',')]
+    pub crawl_scope: Vec<String>,
+
+    /// Out-of-scope URL regex to be excluded by crawler (-cos)
+    #[arg(long = "crawl-out-scope", alias = "cos", value_delimiter = ',')]
+    pub crawl_out_scope: Vec<String>,
+
+    /// Pre-defined scope field (dn, rdn, fqdn) or custom regex (-fs)
+    #[arg(long = "field-scope", alias = "fs", default_value = "rdn")]
+    pub field_scope: String,
+
+    /// Disables host-based default scope (-ns, --no-scope)
+    #[arg(long = "no-scope", alias = "ns")]
+    pub no_scope: bool,
+
     /// Enable headless browser crawling (-hl)
-    #[arg(short = 'H', long = "headless", alias = "hl")]
+    #[arg(long = "headless", alias = "hl")]
     pub headless: bool,
 
     /// Enable headless hybrid crawling (-hb, --hybrid)
@@ -131,4 +167,97 @@ pub struct CliArgs {
     /// Enable verbose debug logging
     #[arg(short = 'v', long = "verbose")]
     pub verbose: bool,
+}
+
+/// Normalizes CLI arguments so single-hyphen multi-character flags (e.g. -cs, -rl, -ct, -iqp)
+/// are cleanly mapped to double-hyphen long flags (--cs, --rl, --ct, --iqp) matching Katana Go CLI UX.
+pub fn normalize_cli_args<I, T>(args: I) -> Vec<String>
+where
+    I: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
+    args.into_iter()
+        .map(|arg| {
+            let s = arg.as_ref();
+            if s.starts_with('-') && !s.starts_with("--") && s.len() > 2 {
+                format!("-{}", s)
+            } else {
+                s.to_string()
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cli_flags_scope_and_runtime() {
+        let input = [
+            "katana",
+            "-u",
+            "https://example.com",
+            "-c",
+            "20",
+            "-p",
+            "5",
+            "-H",
+            "Authorization: Bearer token123",
+            "-H",
+            "X-Key: val",
+            "-cs",
+            ".*example\\.com.*",
+            "-cos",
+            ".*logout.*",
+            "-fs",
+            "fqdn",
+            "--no-scope",
+            "-rl",
+            "300",
+            "-rlm",
+            "5000",
+            "-ct",
+            "30s",
+        ];
+        let normalized = normalize_cli_args(input);
+        let args = CliArgs::try_parse_from(normalized).unwrap();
+
+        assert_eq!(args.url.as_deref(), Some("https://example.com"));
+        assert_eq!(args.concurrency, 20);
+        assert_eq!(args.parallelism, 5);
+        assert_eq!(
+            args.headers,
+            vec!["Authorization: Bearer token123", "X-Key: val"]
+        );
+        assert_eq!(args.crawl_scope, vec![".*example\\.com.*"]);
+        assert_eq!(args.crawl_out_scope, vec![".*logout.*"]);
+        assert_eq!(args.field_scope, "fqdn");
+        assert!(args.no_scope);
+        assert_eq!(args.rate_limit, 300);
+        assert_eq!(args.rate_limit_minute, 5000);
+        assert_eq!(args.crawl_duration.as_deref(), Some("30s"));
+    }
+
+    #[test]
+    fn test_cli_flags_custom_headers_with_commas() {
+        let input = [
+            "katana",
+            "-u",
+            "https://example.com",
+            "-H",
+            "Accept: text/html,application/xhtml+xml;q=0.9",
+            "-H",
+            "Cookie: session=abc, user=def",
+        ];
+        let normalized = normalize_cli_args(input);
+        let args = CliArgs::try_parse_from(normalized).unwrap();
+        assert_eq!(
+            args.headers,
+            vec![
+                "Accept: text/html,application/xhtml+xml;q=0.9",
+                "Cookie: session=abc, user=def"
+            ]
+        );
+    }
 }

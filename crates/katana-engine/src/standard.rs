@@ -22,6 +22,7 @@ use tokio::sync::{mpsc, Semaphore};
 use tracing::{debug, error, info};
 use url::Url;
 
+#[derive(Clone)]
 pub struct StandardEngine {
     options: Arc<Options>,
     client: Client,
@@ -82,8 +83,8 @@ impl StandardEngine {
         let scope = Arc::new(ScopeManager::new(
             &options.scope,
             &options.out_of_scope,
-            "rdn",
-            false,
+            &options.field_scope,
+            options.no_scope,
         )?);
 
         let path_trie = Arc::new(PathTrie::new(options.filter_similar_threshold));
@@ -104,6 +105,50 @@ impl StandardEngine {
             backoff,
             custom_fields,
         })
+    }
+
+    /// Builds a configured reqwest HTTP request honoring HTTP method, global custom headers,
+    /// request-specific headers, and request body payload.
+    pub fn build_http_request(&self, req: &Request) -> Result<reqwest::Request, KatanaError> {
+        let method = match req.method.to_uppercase().as_str() {
+            "POST" => reqwest::Method::POST,
+            "PUT" => reqwest::Method::PUT,
+            "DELETE" => reqwest::Method::DELETE,
+            "HEAD" => reqwest::Method::HEAD,
+            "PATCH" => reqwest::Method::PATCH,
+            "OPTIONS" => reqwest::Method::OPTIONS,
+            _ => reqwest::Method::GET,
+        };
+        let mut builder = self.client.request(method, &req.url);
+
+        // Global custom headers from options (-H)
+        for (k, v) in &self.options.custom_headers {
+            if let (Ok(hname), Ok(hval)) = (
+                reqwest::header::HeaderName::from_bytes(k.as_bytes()),
+                reqwest::header::HeaderValue::from_str(v),
+            ) {
+                builder = builder.header(hname, hval);
+            }
+        }
+
+        // Request-specific headers
+        for (k, v) in &req.headers {
+            if let (Ok(hname), Ok(hval)) = (
+                reqwest::header::HeaderName::from_bytes(k.as_bytes()),
+                reqwest::header::HeaderValue::from_str(v),
+            ) {
+                builder = builder.header(hname, hval);
+            }
+        }
+
+        // Request body payload
+        if !req.body.is_empty() {
+            builder = builder.body(req.body.clone());
+        }
+
+        builder
+            .build()
+            .map_err(|e| KatanaError::HttpError(e.to_string()))
     }
 
     /// Complete 10-step enqueue validation funnel matching Katana Go architecture.
@@ -249,6 +294,230 @@ impl StandardEngine {
             }
         }
     }
+    async fn process_request(
+        &self,
+        current_req: Request,
+        queue: Arc<tokio::sync::Mutex<VecDeque<Request>>>,
+        sender: mpsc::UnboundedSender<CrawlResult>,
+        notify: Arc<tokio::sync::Notify>,
+    ) {
+        let host = Url::parse(&current_req.url)
+            .ok()
+            .and_then(|u| u.host_str().map(String::from))
+            .unwrap_or_default();
+
+        // Apply adaptive backoff if host is throttled
+        if let Some(backoff_delay) = self.backoff.get_backoff_delay(&host) {
+            debug!("Applying backoff of {:?} to host {}", backoff_delay, host);
+            tokio::time::sleep(backoff_delay).await;
+        }
+
+        // Fixed delay if requested
+        if self.options.delay > 0 {
+            tokio::time::sleep(Duration::from_secs(self.options.delay)).await;
+        }
+
+        debug!(
+            "Fetching [{}] {} depth={}",
+            current_req.method, current_req.url, current_req.depth
+        );
+
+        let req_obj = match self.build_http_request(&current_req) {
+            Ok(r) => r,
+            Err(err) => {
+                error!("Error building request for {}: {}", current_req.url, err);
+                let err_result = CrawlResult {
+                    timestamp: Utc::now(),
+                    request: Some(current_req),
+                    error: err.to_string(),
+                    ..Default::default()
+                };
+                let _ = sender.send(err_result);
+                return;
+            }
+        };
+
+        let fetch_res = self.client.execute(req_obj).await;
+
+        match fetch_res {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+
+                // Record throttle or success state
+                if HostBackoffManager::is_throttled(status) {
+                    self.backoff.record_throttle(&host);
+                } else {
+                    self.backoff.record_success(&host);
+                }
+
+                // Increment domain page counter
+                if !current_req.root_hostname.is_empty() {
+                    let counter = self
+                        .domain_counters
+                        .entry(current_req.root_hostname.clone())
+                        .or_insert_with(|| AtomicUsize::new(0));
+                    counter.fetch_add(1, Ordering::Relaxed);
+                }
+
+                let location_header = resp
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|v| v.to_str().ok())
+                    .map(String::from);
+
+                let content_type = resp
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+
+                let headers_map: HashMap<String, String> = resp
+                    .headers()
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+                    .collect();
+
+                let body_text = resp.text().await.unwrap_or_default();
+                let forms = if self.options.form_extraction {
+                    parse_forms(&body_text)
+                } else {
+                    Vec::new()
+                };
+
+                let api_type = katana_core::knowledge::classify_api_endpoint(
+                    &current_req.url,
+                    &content_type,
+                    &body_text,
+                )
+                .map(|t| t.to_string());
+
+                let secrets = if self.options.scan_secrets {
+                    katana_core::knowledge::SecretScanner::scan(&body_text, &current_req.url)
+                } else {
+                    Vec::new()
+                };
+
+                let custom_fields = self.custom_fields.extract(&headers_map, &body_text);
+
+                let stored_path = if self.options.store_response {
+                    let dir = self
+                        .options
+                        .store_response_dir
+                        .as_deref()
+                        .unwrap_or("katana_response");
+                    store_response_to_disk(dir, &current_req.url, status, &headers_map, &body_text)
+                } else {
+                    None
+                };
+
+                let nav_resp = Response {
+                    depth: current_req.depth,
+                    status_code: status,
+                    headers: headers_map,
+                    content_length: body_text.len(),
+                    root_hostname: current_req.root_hostname.clone(),
+                    forms,
+                    body: body_text.clone(),
+                    stored_response_path: stored_path.unwrap_or_default(),
+                    api_type: api_type.clone(),
+                    secrets: secrets.clone(),
+                    ..Default::default()
+                };
+
+                let mut final_req = current_req.clone();
+                final_req.custom_fields = custom_fields;
+
+                let crawl_result = CrawlResult {
+                    timestamp: Utc::now(),
+                    request: Some(final_req),
+                    response: Some(nav_resp),
+                    api_type,
+                    secrets,
+                    error: String::new(),
+                };
+
+                let _ = sender.send(crawl_result);
+
+                // Discover new links
+                let mut discovered =
+                    parse_html_endpoints(&current_req.url, &body_text, current_req.depth);
+
+                // Location response header extraction
+                if let Some(loc_str) = &location_header {
+                    if let Ok(base_parsed) = Url::parse(&current_req.url) {
+                        if let Ok(resolved) = base_parsed.join(loc_str) {
+                            discovered.push(Request {
+                                method: "GET".to_string(),
+                                url: resolved.to_string(),
+                                depth: current_req.depth + 1,
+                                tag: "header".to_string(),
+                                attribute: "location".to_string(),
+                                root_hostname: current_req.root_hostname.clone(),
+                                source: current_req.url.clone(),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                }
+
+                if self.options.scrape_js {
+                    let regex_discovered = extract_endpoints_from_regex(
+                        &current_req.url,
+                        &body_text,
+                        current_req.depth,
+                    );
+                    discovered.extend(regex_discovered);
+                }
+
+                if self.options.scrape_jsluice {
+                    let is_js_file = current_req.url.ends_with(".js")
+                        || current_req.url.ends_with(".css")
+                        || content_type.contains("/javascript");
+
+                    if is_js_file {
+                        if !katana_parser::is_common_js_library(&current_req.url) {
+                            let js_discovered = katana_parser::extract_js_ast_endpoints(
+                                &current_req.url,
+                                &body_text,
+                                current_req.depth,
+                                "js",
+                            );
+                            discovered.extend(js_discovered);
+                        }
+                    } else {
+                        let inline_scripts = katana_parser::extract_inline_scripts(&body_text);
+                        for script in inline_scripts {
+                            let js_discovered = katana_parser::extract_js_ast_endpoints(
+                                &current_req.url,
+                                &script,
+                                current_req.depth,
+                                "script",
+                            );
+                            discovered.extend(js_discovered);
+                        }
+                    }
+                }
+
+                // Funnel discovered requests through the 10-step enqueue pipeline
+                if !discovered.is_empty() {
+                    let mut q = queue.lock().await;
+                    self.enqueue(&mut q, discovered, &sender);
+                    notify.notify_waiters();
+                }
+            }
+            Err(err) => {
+                error!("Error fetching {}: {}", current_req.url, err);
+                let err_result = CrawlResult {
+                    timestamp: Utc::now(),
+                    request: Some(current_req),
+                    error: err.to_string(),
+                    ..Default::default()
+                };
+                let _ = sender.send(err_result);
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -261,7 +530,7 @@ impl Engine for StandardEngine {
         let parsed_root = Url::parse(root_url)?;
         let root_hostname = parsed_root.host_str().unwrap_or("").to_string();
 
-        let mut queue = VecDeque::new();
+        let mut initial_queue = VecDeque::new();
         let initial_req = Request {
             method: "GET".to_string(),
             url: root_url.to_string(),
@@ -271,217 +540,148 @@ impl Engine for StandardEngine {
             ..Default::default()
         };
 
-        self.enqueue(&mut queue, vec![initial_req], &sender);
-        self.seed_known_files(root_url, &mut queue, &sender).await;
+        self.enqueue(&mut initial_queue, vec![initial_req], &sender);
+        self.seed_known_files(root_url, &mut initial_queue, &sender)
+            .await;
 
         info!("Starting Standard crawl for root: {}", root_url);
 
         let concurrency = self.options.concurrency.max(1);
-        let _semaphore = Arc::new(Semaphore::new(concurrency));
+        let semaphore = Arc::new(Semaphore::new(concurrency));
+        let queue = Arc::new(tokio::sync::Mutex::new(initial_queue));
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let active_workers = Arc::new(AtomicUsize::new(0));
 
-        while let Some(current_req) = queue.pop_front() {
-            let host = Url::parse(&current_req.url)
-                .ok()
-                .and_then(|u| u.host_str().map(String::from))
-                .unwrap_or_default();
+        let engine = self.clone();
+        let queue_clone = queue.clone();
+        let notify_clone = notify.clone();
+        let sender_clone = sender.clone();
+        let active_clone = active_workers.clone();
+        let sem_clone = semaphore.clone();
 
-            // Apply adaptive backoff if host is throttled
-            if let Some(backoff_delay) = self.backoff.get_backoff_delay(&host) {
-                debug!("Applying backoff of {:?} to host {}", backoff_delay, host);
-                tokio::time::sleep(backoff_delay).await;
+        let crawl_loop = async move {
+            loop {
+                let maybe_req = {
+                    let mut q = queue_clone.lock().await;
+                    q.pop_front()
+                };
+
+                if let Some(current_req) = maybe_req {
+                    let permit = sem_clone.clone().acquire_owned().await.unwrap();
+                    active_clone.fetch_add(1, Ordering::SeqCst);
+
+                    let eng = engine.clone();
+                    let q_ref = queue_clone.clone();
+                    let notif = notify_clone.clone();
+                    let snd = sender_clone.clone();
+                    let act = active_clone.clone();
+
+                    tokio::spawn(async move {
+                        let _permit = permit;
+                        eng.process_request(current_req, q_ref, snd, notif.clone())
+                            .await;
+                        act.fetch_sub(1, Ordering::SeqCst);
+                        notif.notify_waiters();
+                    });
+                } else {
+                    if active_clone.load(Ordering::SeqCst) == 0 {
+                        break;
+                    }
+                    tokio::select! {
+                        _ = notify_clone.notified() => {},
+                        _ = tokio::time::sleep(Duration::from_millis(50)) => {},
+                    }
+                }
             }
 
-            // Fixed delay if requested
-            if self.options.delay > 0 {
-                tokio::time::sleep(Duration::from_secs(self.options.delay)).await;
-            }
+            // Wait for all in-flight workers to finish
+            let _ = sem_clone.acquire_many(concurrency as u32).await;
+        };
 
-            debug!("Fetching [{}] depth={}", current_req.url, current_req.depth);
-
-            let fetch_res = self.client.get(&current_req.url).send().await;
-
-            match fetch_res {
-                Ok(resp) => {
-                    let status = resp.status().as_u16();
-
-                    // Record throttle or success state
-                    if HostBackoffManager::is_throttled(status) {
-                        self.backoff.record_throttle(&host);
-                    } else {
-                        self.backoff.record_success(&host);
-                    }
-
-                    // Increment domain page counter
-                    if !current_req.root_hostname.is_empty() {
-                        let counter = self
-                            .domain_counters
-                            .entry(current_req.root_hostname.clone())
-                            .or_insert_with(|| AtomicUsize::new(0));
-                        counter.fetch_add(1, Ordering::Relaxed);
-                    }
-
-                    let location_header = resp
-                        .headers()
-                        .get(reqwest::header::LOCATION)
-                        .and_then(|v| v.to_str().ok())
-                        .map(String::from);
-
-                    let content_type = resp
-                        .headers()
-                        .get(reqwest::header::CONTENT_TYPE)
-                        .and_then(|v| v.to_str().ok())
-                        .unwrap_or("")
-                        .to_string();
-
-                    let headers_map = resp
-                        .headers()
-                        .iter()
-                        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-                        .collect();
-
-                    let body_text = resp.text().await.unwrap_or_default();
-                    let forms = if self.options.form_extraction {
-                        parse_forms(&body_text)
-                    } else {
-                        Vec::new()
-                    };
-
-                    let api_type = katana_core::knowledge::classify_api_endpoint(
-                        &current_req.url,
-                        &content_type,
-                        &body_text,
-                    )
-                    .map(|t| t.to_string());
-
-                    let secrets = if self.options.scan_secrets {
-                        katana_core::knowledge::SecretScanner::scan(&body_text, &current_req.url)
-                    } else {
-                        Vec::new()
-                    };
-
-                    let custom_fields = self.custom_fields.extract(&headers_map, &body_text);
-
-                    let stored_path = if self.options.store_response {
-                        let dir = self
-                            .options
-                            .store_response_dir
-                            .as_deref()
-                            .unwrap_or("katana_response");
-                        store_response_to_disk(
-                            dir,
-                            &current_req.url,
-                            status,
-                            &headers_map,
-                            &body_text,
-                        )
-                    } else {
-                        None
-                    };
-
-                    let nav_resp = Response {
-                        depth: current_req.depth,
-                        status_code: status,
-                        headers: headers_map,
-                        content_length: body_text.len(),
-                        root_hostname: root_hostname.clone(),
-                        forms,
-                        body: body_text.clone(),
-                        stored_response_path: stored_path.unwrap_or_default(),
-                        api_type: api_type.clone(),
-                        secrets: secrets.clone(),
-                        ..Default::default()
-                    };
-
-                    let mut final_req = current_req.clone();
-                    final_req.custom_fields = custom_fields;
-
-                    let crawl_result = CrawlResult {
-                        timestamp: Utc::now(),
-                        request: Some(final_req),
-                        response: Some(nav_resp),
-                        api_type,
-                        secrets,
-                        error: String::new(),
-                    };
-
-                    let _ = sender.send(crawl_result);
-
-                    // Discover new links
-                    let mut discovered =
-                        parse_html_endpoints(&current_req.url, &body_text, current_req.depth);
-
-                    // Location response header extraction
-                    if let Some(loc_str) = &location_header {
-                        if let Ok(base_parsed) = Url::parse(&current_req.url) {
-                            if let Ok(resolved) = base_parsed.join(loc_str) {
-                                discovered.push(Request {
-                                    method: "GET".to_string(),
-                                    url: resolved.to_string(),
-                                    depth: current_req.depth + 1,
-                                    tag: "header".to_string(),
-                                    attribute: "location".to_string(),
-                                    root_hostname: root_hostname.clone(),
-                                    source: current_req.url.clone(),
-                                    ..Default::default()
-                                });
-                            }
-                        }
-                    }
-
-                    if self.options.scrape_js {
-                        let regex_discovered = extract_endpoints_from_regex(
-                            &current_req.url,
-                            &body_text,
-                            current_req.depth,
+        if let Some(dur_secs) = self.options.crawl_duration {
+            if dur_secs > 0 {
+                tokio::select! {
+                    _ = crawl_loop => {},
+                    _ = tokio::time::sleep(Duration::from_secs(dur_secs)) => {
+                        info!(
+                            "Crawl duration reached ({}s), terminating crawl for {}",
+                            dur_secs, root_url
                         );
-                        discovered.extend(regex_discovered);
                     }
-
-                    if self.options.scrape_jsluice {
-                        let is_js_file = current_req.url.ends_with(".js")
-                            || current_req.url.ends_with(".css")
-                            || content_type.contains("/javascript");
-
-                        if is_js_file {
-                            if !katana_parser::is_common_js_library(&current_req.url) {
-                                let js_discovered = katana_parser::extract_js_ast_endpoints(
-                                    &current_req.url,
-                                    &body_text,
-                                    current_req.depth,
-                                    "js",
-                                );
-                                discovered.extend(js_discovered);
-                            }
-                        } else {
-                            let inline_scripts = katana_parser::extract_inline_scripts(&body_text);
-                            for script in inline_scripts {
-                                let js_discovered = katana_parser::extract_js_ast_endpoints(
-                                    &current_req.url,
-                                    &script,
-                                    current_req.depth,
-                                    "script",
-                                );
-                                discovered.extend(js_discovered);
-                            }
-                        }
-                    }
-
-                    // Funnel discovered requests through the 10-step enqueue pipeline
-                    self.enqueue(&mut queue, discovered, &sender);
                 }
-                Err(err) => {
-                    error!("Error fetching {}: {}", current_req.url, err);
-                    let err_result = CrawlResult {
-                        timestamp: Utc::now(),
-                        request: Some(current_req),
-                        error: err.to_string(),
-                        ..Default::default()
-                    };
-                    let _ = sender.send(err_result);
-                }
+                return Ok(());
             }
         }
 
+        crawl_loop.await;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use katana_core::options::Options;
+
+    #[test]
+    fn test_build_http_request_methods_and_headers() {
+        let mut headers = HashMap::new();
+        headers.insert("X-Custom-Global".to_string(), "GlobalValue".to_string());
+
+        let options = Options {
+            custom_headers: headers,
+            ..Default::default()
+        };
+
+        let engine = StandardEngine::new(options).unwrap();
+
+        let mut req_headers = HashMap::new();
+        req_headers.insert("X-Request-Specific".to_string(), "ReqVal".to_string());
+
+        let req = Request {
+            method: "POST".to_string(),
+            url: "https://example.com/api/test".to_string(),
+            headers: req_headers,
+            body: r#"{"foo":"bar"}"#.to_string(),
+            ..Default::default()
+        };
+
+        let http_req = engine.build_http_request(&req).unwrap();
+        assert_eq!(http_req.method(), reqwest::Method::POST);
+        assert_eq!(http_req.url().as_str(), "https://example.com/api/test");
+        assert_eq!(
+            http_req
+                .headers()
+                .get("X-Custom-Global")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "GlobalValue"
+        );
+        assert_eq!(
+            http_req
+                .headers()
+                .get("X-Request-Specific")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "ReqVal"
+        );
+    }
+
+    #[test]
+    fn test_build_http_request_different_methods() {
+        let options = Options::default();
+        let engine = StandardEngine::new(options).unwrap();
+
+        for method in &["GET", "POST", "PUT", "DELETE", "HEAD", "PATCH", "OPTIONS"] {
+            let req = Request {
+                method: method.to_string(),
+                url: "https://example.com/".to_string(),
+                ..Default::default()
+            };
+            let http_req = engine.build_http_request(&req).unwrap();
+            assert_eq!(http_req.method().as_str(), *method);
+        }
     }
 }
