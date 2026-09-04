@@ -36,6 +36,9 @@ url = { version = "2.5", features = ["serde"] }
 http = "1.2"
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
 indicatif = { version = "0.17", features = ["tokio"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "default"] }
+x509-parser = "0.18"
 
 # HTML & Parsing
 scraper = "0.22"

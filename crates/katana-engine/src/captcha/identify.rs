@@ -154,6 +154,40 @@ pub fn get_identify_js() -> &'static str {
     "#
 }
 
+/// Parses a CaptchaInfo instance from a JSON Value returned by get_identify_js DOM evaluation.
+pub fn parse_captcha_info_from_value(
+    val: &serde_json::Value,
+    page_url: &str,
+) -> Option<CaptchaInfo> {
+    let provider_str = val.get("provider")?.as_str()?;
+    let sitekey = val.get("sitekey")?.as_str()?.to_string();
+    if sitekey.is_empty() {
+        return None;
+    }
+    let action = val
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let provider = match provider_str.to_lowercase().as_str() {
+        "recaptchav2" => CaptchaProvider::RecaptchaV2,
+        "recaptchav3" => CaptchaProvider::RecaptchaV3,
+        "recaptchav2enterprise" => CaptchaProvider::RecaptchaV2Enterprise,
+        "recaptchav3enterprise" => CaptchaProvider::RecaptchaV3Enterprise,
+        "turnstile" => CaptchaProvider::Turnstile,
+        "hcaptcha" => CaptchaProvider::HCaptcha,
+        _ => return None,
+    };
+
+    Some(CaptchaInfo {
+        provider,
+        sitekey,
+        page_url: page_url.to_string(),
+        action,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +208,22 @@ mod tests {
         let info = detect_captcha_in_html(html_recaptcha_v3, "https://example.com").unwrap();
         assert_eq!(info.provider, CaptchaProvider::RecaptchaV3);
         assert_eq!(info.sitekey, "6Le-wvkSAAAAAPBMRTvw0Q4Muexq9bi0DJwx_mJ-");
+    }
+
+    #[test]
+    fn test_parse_captcha_info_from_value() {
+        let json_val = serde_json::json!({
+            "provider": "turnstile",
+            "sitekey": "0x4AAAAAAABcdef123456789",
+            "action": "login"
+        });
+        let info = parse_captcha_info_from_value(&json_val, "https://example.com/login").unwrap();
+        assert_eq!(info.provider, CaptchaProvider::Turnstile);
+        assert_eq!(info.sitekey, "0x4AAAAAAABcdef123456789");
+        assert_eq!(info.action, "login");
+        assert_eq!(info.page_url, "https://example.com/login");
+
+        let invalid = serde_json::json!({ "provider": "unknown", "sitekey": "abc" });
+        assert!(parse_captcha_info_from_value(&invalid, "https://example.com").is_none());
     }
 }

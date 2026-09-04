@@ -24,6 +24,8 @@ pub struct HeadlessEngine {
     client: Client,
     state_graph: Arc<StateGraph>,
     backoff: Arc<HostBackoffManager>,
+    tls_extractor: Arc<crate::tls::TlsExtractor>,
+    captcha_solver: Option<Arc<dyn crate::captcha::CaptchaSolver>>,
 }
 
 impl HeadlessEngine {
@@ -31,6 +33,12 @@ impl HeadlessEngine {
         let standard_engine = StandardEngine::new(options.clone())?;
         let state_graph = Arc::new(StateGraph::new(2));
         let backoff = Arc::new(HostBackoffManager::default());
+        let tls_extractor = Arc::new(crate::tls::TlsExtractor::new());
+        let captcha_solver: Option<Arc<dyn crate::captcha::CaptchaSolver>> =
+            options.captcha_solver_api_key.as_ref().map(|k| {
+                Arc::new(crate::captcha::CapsolverProvider::new(k.clone()))
+                    as Arc<dyn crate::captcha::CaptchaSolver>
+            });
 
         let mut client_builder = Client::builder()
             .timeout(Duration::from_secs(options.timeout))
@@ -64,6 +72,8 @@ impl HeadlessEngine {
             client,
             state_graph,
             backoff,
+            tls_extractor,
+            captcha_solver,
         })
     }
 
@@ -188,6 +198,56 @@ impl Engine for HeadlessEngine {
                                 // Collect live intercepted subresources
                                 cdp_subresources = session.drain_subresources().await;
 
+                                // Real-time CAPTCHA challenge detection & automated solver bypass
+                                let mut live_captcha = None;
+                                if let Ok(val) =
+                                    session.evaluate(crate::captcha::get_identify_js()).await
+                                {
+                                    if !val.is_null() {
+                                        live_captcha =
+                                            crate::captcha::identify::parse_captcha_info_from_value(
+                                                &val,
+                                                &current_req.url,
+                                            );
+                                    }
+                                }
+                                if live_captcha.is_none() {
+                                    let body_snap = session.get_html().await.unwrap_or_default();
+                                    live_captcha = crate::captcha::detect_captcha_in_html(
+                                        &body_snap,
+                                        &current_req.url,
+                                    );
+                                }
+
+                                if let Some(captcha_info) = &live_captcha {
+                                    info!(
+                                        "Real-time CAPTCHA challenge detected on {}: provider={} sitekey={}",
+                                        current_req.url, captcha_info.provider, captcha_info.sitekey
+                                    );
+
+                                    if let Some(solver) = &self.captcha_solver {
+                                        info!(
+                                            "Invoking CAPTCHA solver provider for {}",
+                                            captcha_info.provider
+                                        );
+                                        match solver.solve(captcha_info).await {
+                                            Ok(token) => {
+                                                info!("CAPTCHA solved successfully! Executing DOM bypass injection script");
+                                                let inject_js = crate::captcha::get_inject_script(
+                                                    &captcha_info.provider,
+                                                    &token,
+                                                );
+                                                let _ = session.evaluate(&inject_js).await;
+                                                tokio::time::sleep(Duration::from_millis(1500))
+                                                    .await;
+                                            }
+                                            Err(e) => {
+                                                warn!("CAPTCHA solving attempt failed: {}", e);
+                                            }
+                                        }
+                                    }
+                                }
+
                                 // Automated form filling
                                 if self.options.automatic_form_fill {
                                     let body_snapshot =
@@ -297,6 +357,30 @@ impl Engine for HeadlessEngine {
 
                     let technologies = katana_core::detect_technologies(&headers_map, &body_text);
 
+                    let tls_data =
+                        if self.options.tls_data && current_req.url.starts_with("https://") {
+                            if let Ok(parsed_url) = Url::parse(&current_req.url) {
+                                if let Some(host_str) = parsed_url.host_str() {
+                                    let port = parsed_url.port().unwrap_or(443);
+                                    self.tls_extractor
+                                        .extract_tls_data(
+                                            host_str,
+                                            port,
+                                            self.options.tls_preset.as_deref(),
+                                        )
+                                        .await
+                                        .ok()
+                                        .map(|arc| (*arc).clone())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+
                     let stored_path = if self.options.store_response {
                         let dir = self
                             .options
@@ -327,6 +411,7 @@ impl Engine for HeadlessEngine {
                         stored_response_path: stored_path.unwrap_or_default(),
                         api_type: api_type.clone(),
                         secrets: secrets.clone(),
+                        tls_data: tls_data.clone(),
                         ..Default::default()
                     };
 
@@ -334,6 +419,7 @@ impl Engine for HeadlessEngine {
                         timestamp: Utc::now(),
                         request: Some(current_req.clone()),
                         response: Some(nav_resp),
+                        tls_data,
                         api_type,
                         technologies,
                         secrets,
