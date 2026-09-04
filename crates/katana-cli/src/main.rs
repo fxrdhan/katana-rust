@@ -156,8 +156,35 @@ async fn main() -> anyhow::Result<()> {
         }));
     }
 
-    for handle in join_handles {
-        let _ = handle.await;
+    let resume_filename = args
+        .resume
+        .clone()
+        .unwrap_or_else(|| "katana.resume".to_string());
+
+    let crawl_futures = async {
+        for handle in join_handles {
+            let _ = handle.await;
+        }
+    };
+
+    tokio::select! {
+        _ = crawl_futures => {
+            if args.resume.is_none() && std::path::Path::new(&resume_filename).exists() {
+                let _ = std::fs::remove_file(&resume_filename);
+            }
+        }
+        _ = tokio::signal::ctrl_c() => {
+            eprintln!("\n[!] SIGINT received. Saving crawl checkpoint to: {}", resume_filename);
+            if let Err(e) = engine.dump_checkpoint(&resume_filename, vec![]) {
+                eprintln!("Failed to save checkpoint: {}", e);
+            } else {
+                eprintln!(
+                    "[+] Checkpoint successfully saved to {}. Resume with: katana -resume {}",
+                    resume_filename, resume_filename
+                );
+            }
+            std::process::exit(130);
+        }
     }
 
     drop(tx);
