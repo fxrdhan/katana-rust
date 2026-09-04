@@ -41,6 +41,8 @@ pub struct StandardEngine {
     custom_fields: Arc<katana_core::CustomFieldManager>,
     rate_limiter_second: Option<Arc<TokenBucketRateLimiter>>,
     rate_limiter_minute: Option<Arc<TokenBucketRateLimiter>>,
+    active_queue: Arc<tokio::sync::Mutex<VecDeque<Request>>>,
+    in_flight_requests: Arc<DashSet<String>>,
 }
 
 fn store_response_to_disk(
@@ -148,6 +150,8 @@ impl StandardEngine {
             custom_fields,
             rate_limiter_second,
             rate_limiter_minute,
+            active_queue: Arc::new(tokio::sync::Mutex::new(VecDeque::new())),
+            in_flight_requests: Arc::new(DashSet::new()),
         })
     }
 
@@ -286,9 +290,10 @@ impl StandardEngine {
                     if self.options.filter_similar {
                         check_url = fingerprint_url(&check_url, Some(&self.path_trie));
                     }
-                    if !self.visited_urls.insert(check_url) {
+                    if !self.visited_filter.insert(&check_url) {
                         continue;
                     }
+                    self.visited_urls.insert(check_url);
                     if !self.scope.validate(&parent_url, &nr.root_hostname) {
                         continue;
                     }
@@ -343,7 +348,20 @@ impl StandardEngine {
     /// Dumps the current crawl state to a checkpoint file.
     pub fn dump_checkpoint_file(&self, path: &str, in_flight: Vec<String>) -> anyhow::Result<()> {
         let visited: Vec<String> = self.visited_urls.iter().map(|item| item.clone()).collect();
-        let checkpoint = katana_core::CrawlCheckpoint::new(visited, in_flight);
+        let mut all_in_flight = std::collections::HashSet::new();
+        for u in in_flight {
+            all_in_flight.insert(u);
+        }
+        for u in self.in_flight_requests.iter() {
+            all_in_flight.insert(u.clone());
+        }
+        if let Ok(q) = self.active_queue.try_lock() {
+            for req in q.iter() {
+                all_in_flight.insert(req.url.clone());
+            }
+        }
+        let checkpoint =
+            katana_core::CrawlCheckpoint::new(visited, all_in_flight.into_iter().collect());
         checkpoint.save(path)
     }
 
@@ -388,9 +406,13 @@ impl StandardEngine {
             current_req.method, current_req.url, current_req.depth
         );
 
+        let current_url = current_req.url.clone();
+        self.in_flight_requests.insert(current_url.clone());
+
         let req_obj = match self.build_http_request(&current_req) {
             Ok(r) => r,
             Err(err) => {
+                self.in_flight_requests.remove(&current_url);
                 error!("Error building request for {}: {}", current_req.url, err);
                 let err_result = CrawlResult {
                     timestamp: Utc::now(),
@@ -583,6 +605,7 @@ impl StandardEngine {
                 let _ = sender.send(err_result);
             }
         }
+        self.in_flight_requests.remove(&current_url);
     }
 }
 
@@ -636,7 +659,12 @@ impl Engine for StandardEngine {
 
         let concurrency = self.options.concurrency.max(1);
         let semaphore = Arc::new(Semaphore::new(concurrency));
-        let queue = Arc::new(tokio::sync::Mutex::new(initial_queue));
+        {
+            let mut q = self.active_queue.lock().await;
+            q.clear();
+            q.extend(initial_queue);
+        }
+        let queue = self.active_queue.clone();
         let notify = Arc::new(tokio::sync::Notify::new());
         let active_workers = Arc::new(AtomicUsize::new(0));
 

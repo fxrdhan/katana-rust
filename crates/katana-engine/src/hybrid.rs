@@ -34,6 +34,10 @@ impl HybridEngine {
 
 #[async_trait]
 impl Engine for HybridEngine {
+    fn dump_checkpoint(&self, path: &str, in_flight: Vec<String>) -> anyhow::Result<()> {
+        self.standard_engine.dump_checkpoint(path, in_flight)
+    }
+
     async fn crawl(
         &self,
         root_url: &str,
