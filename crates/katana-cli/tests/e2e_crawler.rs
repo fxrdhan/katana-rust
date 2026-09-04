@@ -282,6 +282,82 @@ async fn test_e2e_raw_request_and_checkpoint() {
 }
 
 #[tokio::test]
+async fn test_e2e_checkpoint_resume_lifecycle() {
+    let (base_url, server_handle) = start_mock_server().await;
+    let temp_cp_file =
+        std::env::temp_dir().join(format!("test_resume_{}.json", std::process::id()));
+    let cp_path = temp_cp_file.to_str().unwrap().to_string();
+
+    // 1. First crawl pass: visit base_url only (max_depth 0)
+    let options1 = Options {
+        urls: vec![base_url.clone()],
+        max_depth: 0,
+        concurrency: 2,
+        timeout: 5,
+        ..Default::default()
+    };
+
+    let engine1 = StandardEngine::new(options1).unwrap();
+    let (tx1, mut rx1) = mpsc::unbounded_channel();
+    let root = base_url.clone();
+    let h1 = tokio::spawn(async move {
+        let _ = engine1.crawl(&root, tx1).await;
+    });
+
+    let mut crawled_pass1 = Vec::new();
+    while let Some(res) = rx1.recv().await {
+        if res.error.is_empty() {
+            if let Some(req) = res.request {
+                crawled_pass1.push(req.url);
+            }
+        }
+    }
+    let _ = h1.await;
+
+    // Simulate saving checkpoint with in-flight remaining URL
+    let remaining_target = format!("{}/contact", base_url);
+    let checkpoint =
+        katana_core::CrawlCheckpoint::new(crawled_pass1.clone(), vec![remaining_target.clone()]);
+    checkpoint.save(&cp_path).unwrap();
+
+    // 2. Second crawl pass: resume using checkpoint
+    let options2 = Options {
+        urls: vec![remaining_target.clone()],
+        max_depth: 1,
+        concurrency: 2,
+        timeout: 5,
+        resume_file: Some(cp_path.clone()),
+        ..Default::default()
+    };
+
+    let engine2 = StandardEngine::new(options2).unwrap();
+    // Visited filter should be pre-populated with pass 1 URLs
+    assert!(engine2.visited_urls().iter().any(|u| u == &base_url));
+
+    let (tx2, mut rx2) = mpsc::unbounded_channel();
+    let target = remaining_target.clone();
+    let h2 = tokio::spawn(async move {
+        let _ = engine2.crawl(&target, tx2).await;
+    });
+
+    let mut crawled_pass2 = Vec::new();
+    while let Some(res) = rx2.recv().await {
+        if !res.error.is_empty() {
+            println!("Pass 2 Error: {}", res.error);
+        }
+        if let Some(req) = res.request {
+            crawled_pass2.push(req.url);
+        }
+    }
+    let _ = h2.await;
+    server_handle.abort();
+
+    assert!(crawled_pass2.iter().any(|u| u.ends_with("/contact")));
+
+    let _ = std::fs::remove_file(temp_cp_file);
+}
+
+#[tokio::test]
 async fn test_e2e_concurrency_and_headers_dispatcher() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
