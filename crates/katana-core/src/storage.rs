@@ -1,9 +1,13 @@
-use chrono::Utc;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+lazy_static::lazy_static! {
+    static ref INDEX_LOCK: Mutex<()> = Mutex::new(());
+}
 
 /// Thread-safe disk persistence for raw HTTP responses with synchronized index mapping (index.txt).
 pub struct ResponseStorageManager;
@@ -22,7 +26,6 @@ impl ResponseStorageManager {
 
         let mut hasher = Sha256::new();
         hasher.update(url.as_bytes());
-        hasher.update(Utc::now().to_rfc3339().as_bytes());
         let file_hash = format!("{:x}", hasher.finalize());
         let filename = format!("{}.txt", &file_hash[..16]);
         let file_path: PathBuf = dir_path.join(&filename);
@@ -39,6 +42,7 @@ impl ResponseStorageManager {
 
         // Synchronize index.txt mapping: <hash> <status> <url> <filename>
         let index_path = dir_path.join("index.txt");
+        let _lock = INDEX_LOCK.lock().unwrap();
         let mut index_file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -65,7 +69,10 @@ mod tests {
     fn test_store_response_and_index() {
         let temp_dir = std::env::temp_dir().join(format!(
             "katana_test_storage_{}",
-            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
         ));
         let dir_str = temp_dir.to_str().unwrap();
 
@@ -92,6 +99,39 @@ mod tests {
         assert!(index_content.contains("https://example.com/login"));
         assert!(index_content.contains("200"));
 
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_deterministic_hashing() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "katana_test_deterministic_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let dir_str = temp_dir.to_str().unwrap();
+        let headers = HashMap::new();
+
+        let path1 = ResponseStorageManager::store_response(
+            dir_str,
+            "https://example.com/test",
+            200,
+            &headers,
+            "body1",
+        )
+        .unwrap();
+        let path2 = ResponseStorageManager::store_response(
+            dir_str,
+            "https://example.com/test",
+            200,
+            &headers,
+            "body2",
+        )
+        .unwrap();
+
+        assert_eq!(path1, path2);
         let _ = fs::remove_dir_all(&temp_dir);
     }
 }
