@@ -60,13 +60,20 @@ impl OutputWriter {
                 String::new()
             };
 
+            let tech_str = if !res.technologies.is_empty() {
+                format!(" [{}]", res.technologies.join(", ").bright_blue())
+            } else {
+                String::new()
+            };
+
             let line = format!(
-                "{} [{}] [{}] {}{}",
+                "{} [{}] [{}] {}{}{}",
                 status_str,
                 tag.magenta(),
                 method.yellow(),
                 req.url,
-                api_str
+                api_str,
+                tech_str
             );
 
             println!("{}", line);

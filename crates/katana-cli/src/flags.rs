@@ -136,9 +136,17 @@ pub struct CliArgs {
     #[arg(long = "display-out-scope", alias = "do")]
     pub display_out_scope: bool,
 
-    /// HTTP Proxy URL
+    /// HTTP/HTTPS/SOCKS5 Proxy URL or comma-separated list of proxies for rotation
     #[arg(long = "proxy")]
     pub proxy: Option<String>,
+
+    /// Enable TLS ClientHello browser impersonation (-tlsi, --tls-impersonate)
+    #[arg(long = "tls-impersonate", alias = "tlsi")]
+    pub tls_impersonate: bool,
+
+    /// TLS impersonation preset profile (chrome, firefox, safari, random)
+    #[arg(long = "tls-preset")]
+    pub tls_preset: Option<String>,
 
     /// Output file path (-o)
     #[arg(short = 'o', long = "output")]

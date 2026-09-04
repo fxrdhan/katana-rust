@@ -274,12 +274,15 @@ impl Engine for HeadlessEngine {
                         );
                     }
 
+                    let technologies = katana_core::detect_technologies(&headers_map, &body_text);
+
                     let nav_resp = Response {
                         depth: current_req.depth,
                         status_code: status,
                         headers: headers_map,
                         content_length: body_text.len(),
                         root_hostname: root_hostname.clone(),
+                        technologies: technologies.clone(),
                         forms: forms.clone(),
                         body: body_text.clone(),
                         api_type: api_type.clone(),
@@ -292,6 +295,7 @@ impl Engine for HeadlessEngine {
                         request: Some(current_req.clone()),
                         response: Some(nav_resp),
                         api_type,
+                        technologies,
                         secrets,
                         error: String::new(),
                     };

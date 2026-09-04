@@ -113,6 +113,8 @@ async fn main() -> anyhow::Result<()> {
         max_domain_pages: args.max_domain_pages,
         display_out_scope: args.display_out_scope,
         proxy: args.proxy,
+        tls_impersonate: args.tls_impersonate,
+        tls_preset: args.tls_preset,
         scan_secrets: args.scan_secrets,
         output_file: args.output.clone(),
         store_response: args.store_response,
