@@ -138,6 +138,8 @@ async fn main() -> anyhow::Result<()> {
         extension_match: args.extension_match,
         extension_filter: args.extension_filter,
         no_extension_filter: args.no_extension_filter,
+        exclude: args.exclude.clone(),
+        exclude_private_ips: args.exclude_private_ips,
         ..Default::default()
     };
 
@@ -175,8 +177,24 @@ async fn main() -> anyhow::Result<()> {
         .clone()
         .unwrap_or_else(|| "katana.resume".to_string());
 
+    let network_policy = katana_core::NetworkPolicy::new(args.exclude_private_ips, &args.exclude)?;
+
+    let valid_targets: Vec<String> = target_urls
+        .into_iter()
+        .filter(|target| {
+            if !network_policy.validate_url(target) {
+                if !args.silent {
+                    eprintln!("Skipping excluded target {} per network policy", target);
+                }
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+
     let in_flight_targets = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
-    for target in &target_urls {
+    for target in &valid_targets {
         in_flight_targets.lock().unwrap().insert(target.clone());
     }
 
@@ -185,7 +203,7 @@ async fn main() -> anyhow::Result<()> {
 
     let engine_for_crawl = engine.clone();
     let tx_for_crawl = tx.clone();
-    let targets_to_crawl = target_urls.clone();
+    let targets_to_crawl = valid_targets;
 
     let crawl_worker = async move {
         let mut join_handles = Vec::new();

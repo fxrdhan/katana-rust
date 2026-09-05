@@ -68,6 +68,14 @@ pub struct CliArgs {
     #[arg(long = "crawl-out-scope", alias = "cos", value_delimiter = ',')]
     pub crawl_out_scope: Vec<String>,
 
+    /// Exclude host matching specified filter ('private-ips', ip, regex) (-e, --exclude)
+    #[arg(short = 'e', long = "exclude", value_delimiter = ',')]
+    pub exclude: Vec<String>,
+
+    /// Exclude private/intranet IPs and loopback from crawling (--exclude-private-ips)
+    #[arg(long = "exclude-private-ips")]
+    pub exclude_private_ips: bool,
+
     /// Pre-defined scope field (dn, rdn, fqdn) or custom regex (-fs)
     #[arg(long = "field-scope", alias = "fs", default_value = "rdn")]
     pub field_scope: String,
@@ -460,5 +468,22 @@ mod tests {
         assert_eq!(args.extension_match, vec!["php", "html", "js"]);
         assert_eq!(args.extension_filter, vec!["bak", "old"]);
         assert!(args.no_extension_filter);
+    }
+
+    #[test]
+    fn test_cli_flags_exclude_and_private_ips() {
+        let input = [
+            "katana",
+            "-u",
+            "https://example.com",
+            "-e",
+            "private-ips,10.0.0.1",
+            "--exclude-private-ips",
+        ];
+        let normalized = normalize_cli_args(input);
+        let args = CliArgs::try_parse_from(normalized).unwrap();
+
+        assert_eq!(args.exclude, vec!["private-ips", "10.0.0.1"]);
+        assert!(args.exclude_private_ips);
     }
 }

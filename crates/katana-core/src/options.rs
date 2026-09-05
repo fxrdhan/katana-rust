@@ -58,6 +58,8 @@ pub struct Options {
     pub extension_match: Vec<String>,
     pub extension_filter: Vec<String>,
     pub no_extension_filter: bool,
+    pub exclude: Vec<String>,
+    pub exclude_private_ips: bool,
 }
 
 impl Default for Options {
@@ -118,6 +120,8 @@ impl Default for Options {
             extension_match: Vec::new(),
             extension_filter: Vec::new(),
             no_extension_filter: false,
+            exclude: Vec::new(),
+            exclude_private_ips: false,
         }
     }
 }
