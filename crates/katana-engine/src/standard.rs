@@ -482,6 +482,8 @@ impl StandardEngine {
                     counter.fetch_add(1, Ordering::Relaxed);
                 }
 
+                let final_url = resp.url().as_str().to_string();
+
                 let location_header = resp
                     .headers()
                     .get(reqwest::header::LOCATION)
@@ -509,14 +511,14 @@ impl StandardEngine {
                 };
 
                 let api_type = katana_core::knowledge::classify_api_endpoint(
-                    &current_req.url,
+                    &final_url,
                     &content_type,
                     &body_text,
                 )
                 .map(|t| t.to_string());
 
                 let secrets = if self.options.scan_secrets {
-                    katana_core::knowledge::SecretScanner::scan(&body_text, &current_req.url)
+                    katana_core::knowledge::SecretScanner::scan(&body_text, &final_url)
                 } else {
                     Vec::new()
                 };
@@ -529,7 +531,7 @@ impl StandardEngine {
                         .store_response_dir
                         .as_deref()
                         .unwrap_or("katana_response");
-                    store_response_to_disk(dir, &current_req.url, status, &headers_map, &body_text)
+                    store_response_to_disk(dir, &final_url, status, &headers_map, &body_text)
                 } else {
                     None
                 };
@@ -596,13 +598,27 @@ impl StandardEngine {
 
                 let _ = sender.send(crawl_result);
 
-                // Discover new links
+                // Discover new links using the post-redirect destination URL
                 let mut discovered =
-                    parse_html_endpoints(&current_req.url, &body_text, current_req.depth);
+                    parse_html_endpoints(&final_url, &body_text, current_req.depth);
+
+                // If redirected, also enqueue the final destination URL itself if different from initial request
+                if final_url != current_req.url {
+                    discovered.push(Request {
+                        method: "GET".to_string(),
+                        url: final_url.clone(),
+                        depth: current_req.depth,
+                        tag: "redirect".to_string(),
+                        attribute: "location".to_string(),
+                        root_hostname: current_req.root_hostname.clone(),
+                        source: current_req.url.clone(),
+                        ..Default::default()
+                    });
+                }
 
                 // Location response header extraction
                 if let Some(loc_str) = &location_header {
-                    if let Ok(base_parsed) = Url::parse(&current_req.url) {
+                    if let Ok(base_parsed) = Url::parse(&final_url) {
                         if let Ok(resolved) = base_parsed.join(loc_str) {
                             discovered.push(Request {
                                 method: "GET".to_string(),
@@ -611,7 +627,7 @@ impl StandardEngine {
                                 tag: "header".to_string(),
                                 attribute: "location".to_string(),
                                 root_hostname: current_req.root_hostname.clone(),
-                                source: current_req.url.clone(),
+                                source: final_url.clone(),
                                 ..Default::default()
                             });
                         }
@@ -619,23 +635,20 @@ impl StandardEngine {
                 }
 
                 if self.options.scrape_js {
-                    let regex_discovered = extract_endpoints_from_regex(
-                        &current_req.url,
-                        &body_text,
-                        current_req.depth,
-                    );
+                    let regex_discovered =
+                        extract_endpoints_from_regex(&final_url, &body_text, current_req.depth);
                     discovered.extend(regex_discovered);
                 }
 
                 if self.options.scrape_jsluice {
-                    let is_js_file = current_req.url.ends_with(".js")
-                        || current_req.url.ends_with(".css")
+                    let is_js_file = final_url.ends_with(".js")
+                        || final_url.ends_with(".css")
                         || content_type.contains("/javascript");
 
                     if is_js_file {
-                        if !katana_parser::is_common_js_library(&current_req.url) {
+                        if !katana_parser::is_common_js_library(&final_url) {
                             let js_discovered = katana_parser::extract_js_ast_endpoints(
-                                &current_req.url,
+                                &final_url,
                                 &body_text,
                                 current_req.depth,
                                 "js",
@@ -646,7 +659,7 @@ impl StandardEngine {
                         let inline_scripts = katana_parser::extract_inline_scripts(&body_text);
                         for script in inline_scripts {
                             let js_discovered = katana_parser::extract_js_ast_endpoints(
-                                &current_req.url,
+                                &final_url,
                                 &script,
                                 current_req.depth,
                                 "script",
@@ -979,5 +992,83 @@ mod tests {
         let body = read_bounded_body(resp, 100).await;
         assert_eq!(body.len(), 100);
         assert_eq!(body, "A".repeat(100));
+    }
+
+    #[tokio::test]
+    async fn test_post_redirect_relative_resolution() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            // First connection: request to /orig -> redirect 302 to /target/sub/
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let redirect_resp = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{}/target/sub/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    port
+                );
+                let _ = socket.write_all(redirect_resp.as_bytes()).await;
+            }
+
+            // Second connection: redirected request to /target/sub/ -> returns HTML with relative link
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let body = r#"<html><body><a href="item.html">Item</a></body></html>"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(resp.as_bytes()).await;
+            }
+        });
+
+        let options = Options {
+            max_depth: 3,
+            field_scope: "fqdn".to_string(),
+            ..Default::default()
+        };
+        let engine = StandardEngine::new(options).unwrap();
+        let queue = Arc::new(tokio::sync::Mutex::new(VecDeque::new()));
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let notify = Arc::new(tokio::sync::Notify::new());
+
+        let req = Request {
+            method: "GET".to_string(),
+            url: format!("http://127.0.0.1:{}/orig", port),
+            depth: 1,
+            root_hostname: "127.0.0.1".to_string(),
+            ..Default::default()
+        };
+
+        engine
+            .process_request(req, queue.clone(), sender, notify)
+            .await;
+
+        let crawl_res = receiver.try_recv().expect("Should produce a crawl result");
+        assert_eq!(
+            crawl_res.request.unwrap().url,
+            format!("http://127.0.0.1:{}/orig", port)
+        );
+        assert_eq!(crawl_res.response.unwrap().status_code, 200);
+
+        let q = queue.lock().await;
+        let urls: Vec<_> = q.iter().map(|r| r.url.as_str()).collect();
+        // Discovered links must resolve relative to /target/sub/, yielding /target/sub/item.html
+        assert!(
+            urls.contains(&format!("http://127.0.0.1:{}/target/sub/item.html", port).as_str()),
+            "Expected /target/sub/item.html in queue, found: {:?}",
+            urls
+        );
+        // And the redirect target itself must also be tracked/enqueued
+        assert!(
+            urls.contains(&format!("http://127.0.0.1:{}/target/sub/", port).as_str()),
+            "Expected redirect destination /target/sub/ in queue, found: {:?}",
+            urls
+        );
     }
 }
