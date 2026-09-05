@@ -135,6 +135,9 @@ async fn main() -> anyhow::Result<()> {
         custom_fields_config: args.config,
         raw_request_file: args.raw_request.clone(),
         resume_file: args.resume.clone(),
+        extension_match: args.extension_match,
+        extension_filter: args.extension_filter,
+        no_extension_filter: args.no_extension_filter,
         ..Default::default()
     };
 

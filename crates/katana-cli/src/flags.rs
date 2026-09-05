@@ -136,6 +136,18 @@ pub struct CliArgs {
     #[arg(long = "display-out-scope", alias = "do")]
     pub display_out_scope: bool,
 
+    /// Match only specific file extensions (-em, --extension-match)
+    #[arg(long = "extension-match", alias = "em", value_delimiter = ',')]
+    pub extension_match: Vec<String>,
+
+    /// Filter/deny specific file extensions (-ef, --extension-filter)
+    #[arg(long = "extension-filter", alias = "ef", value_delimiter = ',')]
+    pub extension_filter: Vec<String>,
+
+    /// Disable default file extension filter (-nef, --no-extension-filter)
+    #[arg(long = "no-extension-filter", alias = "nef")]
+    pub no_extension_filter: bool,
+
     /// HTTP/HTTPS/SOCKS5 Proxy URL or comma-separated list of proxies for rotation
     #[arg(long = "proxy")]
     pub proxy: Option<String>,
@@ -428,5 +440,25 @@ mod tests {
             Some("CAP-1234567890")
         );
         assert!(args.jsonl);
+    }
+
+    #[test]
+    fn test_cli_flags_extension_matching_and_filtering() {
+        let input = [
+            "katana",
+            "-u",
+            "https://example.com",
+            "-em",
+            "php,html,js",
+            "-ef",
+            "bak,old",
+            "-nef",
+        ];
+        let normalized = normalize_cli_args(input);
+        let args = CliArgs::try_parse_from(normalized).unwrap();
+
+        assert_eq!(args.extension_match, vec!["php", "html", "js"]);
+        assert_eq!(args.extension_filter, vec!["bak", "old"]);
+        assert!(args.no_extension_filter);
     }
 }

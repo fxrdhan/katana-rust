@@ -1,5 +1,6 @@
 pub mod custom_field;
 pub mod error;
+pub mod extensions;
 pub mod filters;
 pub mod knowledge;
 pub mod navigation;
@@ -12,6 +13,7 @@ pub mod technology;
 
 pub use custom_field::{CustomFieldConfig, CustomFieldManager};
 pub use error::KatanaError;
+pub use extensions::{normalize_extension, ExtensionValidator, DEFAULT_EXT_FILTER};
 pub use filters::{
     extract_parent_paths, is_cycle, is_logout_url, replace_all_query_param, CompactUrlFilter,
 };
