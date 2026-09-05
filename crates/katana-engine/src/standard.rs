@@ -57,6 +57,32 @@ fn store_response_to_disk(
     katana_core::ResponseStorageManager::store_response(dir, url, status, headers, body).ok()
 }
 
+/// Reads response body stream up to max_bytes to prevent OOM and stream bombs.
+pub async fn read_bounded_body(resp: reqwest::Response, max_bytes: usize) -> String {
+    let mut body_bytes = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk_res) = futures::StreamExt::next(&mut stream).await {
+        match chunk_res {
+            Ok(chunk) => {
+                let remaining = max_bytes.saturating_sub(body_bytes.len());
+                if remaining == 0 {
+                    break;
+                }
+                let to_take = chunk.len().min(remaining);
+                body_bytes.extend_from_slice(&chunk[..to_take]);
+                if body_bytes.len() >= max_bytes {
+                    break;
+                }
+            }
+            Err(e) => {
+                debug!("Error streaming response body chunk: {}", e);
+                break;
+            }
+        }
+    }
+    String::from_utf8_lossy(&body_bytes).to_string()
+}
+
 impl StandardEngine {
     pub fn new(options: Options) -> anyhow::Result<Self> {
         let mut client_builder = Client::builder()
@@ -337,10 +363,9 @@ impl StandardEngine {
         let robots_url = format!("{}/robots.txt", base_trimmed);
         if let Ok(resp) = self.client.get(&robots_url).send().await {
             if resp.status().is_success() {
-                if let Ok(content) = resp.text().await {
-                    let discovered = parse_robots_txt(&robots_url, &content);
-                    self.enqueue(queue, discovered, sender);
-                }
+                let content = read_bounded_body(resp, self.options.body_read_size).await;
+                let discovered = parse_robots_txt(&robots_url, &content);
+                self.enqueue(queue, discovered, sender);
             }
         }
 
@@ -348,10 +373,9 @@ impl StandardEngine {
         let sitemap_url = format!("{}/sitemap.xml", base_trimmed);
         if let Ok(resp) = self.client.get(&sitemap_url).send().await {
             if resp.status().is_success() {
-                if let Ok(content) = resp.text().await {
-                    let discovered = parse_sitemap_xml(&sitemap_url, &content);
-                    self.enqueue(queue, discovered, sender);
-                }
+                let content = read_bounded_body(resp, self.options.body_read_size).await;
+                let discovered = parse_sitemap_xml(&sitemap_url, &content);
+                self.enqueue(queue, discovered, sender);
             }
         }
     }
@@ -477,7 +501,7 @@ impl StandardEngine {
                     .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
                     .collect();
 
-                let body_text = resp.text().await.unwrap_or_default();
+                let body_text = read_bounded_body(resp, self.options.body_read_size).await;
                 let forms = if self.options.form_extraction {
                     parse_forms(&body_text)
                 } else {
@@ -927,5 +951,33 @@ mod tests {
         assert_eq!(queue.len(), 2);
         assert_eq!(queue[0].url, "https://example.com/index.html");
         assert_eq!(queue[1].url, "https://example.com/api/v1/data");
+    }
+
+    #[tokio::test]
+    async fn test_read_bounded_body_cap() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let huge_body = "A".repeat(10000);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    huge_body.len(),
+                    huge_body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("http://127.0.0.1:{}", port))
+            .send()
+            .await
+            .unwrap();
+        let body = read_bounded_body(resp, 100).await;
+        assert_eq!(body.len(), 100);
+        assert_eq!(body, "A".repeat(100));
     }
 }
