@@ -4,6 +4,7 @@ pub mod extensions;
 pub mod filters;
 pub mod knowledge;
 pub mod navigation;
+pub mod networkpolicy;
 pub mod options;
 pub mod raw;
 pub mod resume;
@@ -19,6 +20,7 @@ pub use filters::{
 };
 pub use knowledge::{classify_api_endpoint, ApiType, SecretFinding, SecretScanner};
 pub use navigation::{Form, Request, Response, Result, TlsData};
+pub use networkpolicy::{is_private_ip, NetworkPolicy};
 pub use options::{CrawlerOptions, Options};
 pub use raw::{
     parse_raw_request_file, parse_raw_request_str, serialize_raw_request, serialize_raw_response,
