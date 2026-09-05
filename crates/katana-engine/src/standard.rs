@@ -1003,11 +1003,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_bounded_body_cap() {
-        use tokio::io::AsyncWriteExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move {
             if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
                 let huge_body = "A".repeat(10000);
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -1015,6 +1017,7 @@ mod tests {
                     huge_body
                 );
                 let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
             }
         });
 
