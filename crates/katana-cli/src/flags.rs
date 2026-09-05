@@ -228,8 +228,12 @@ pub struct CliArgs {
     )]
     pub captcha_solver_api_key: Option<String>,
 
-    /// Silent mode - output only discovered endpoints, suppressing logs and progress (-silent, -s)
-    #[arg(short = 's', long = "silent")]
+    /// Visit strategy: depth-first (DFS/LIFO) or breadth-first (BFS/FIFO) (-s, --strategy)
+    #[arg(short = 's', long = "strategy", default_value = "depth-first")]
+    pub strategy: String,
+
+    /// Silent mode - output only discovered endpoints, suppressing logs and progress (-silent)
+    #[arg(long = "silent")]
     pub silent: bool,
 
     /// Show real-time crawl progress bar and telemetry metrics
@@ -498,5 +502,16 @@ mod tests {
         let args = CliArgs::try_parse_from(normalized).unwrap();
 
         assert_eq!(args.known_files.as_deref(), Some("all"));
+    }
+
+    #[test]
+    fn test_cli_flags_strategy() {
+        let input_default = ["katana", "-u", "https://example.com"];
+        let args_default = CliArgs::try_parse_from(normalize_cli_args(input_default)).unwrap();
+        assert_eq!(args_default.strategy, "depth-first");
+
+        let input_bfs = ["katana", "-u", "https://example.com", "-s", "breadth-first"];
+        let args_bfs = CliArgs::try_parse_from(normalize_cli_args(input_bfs)).unwrap();
+        assert_eq!(args_bfs.strategy, "breadth-first");
     }
 }

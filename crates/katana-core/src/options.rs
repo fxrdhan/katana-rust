@@ -61,6 +61,7 @@ pub struct Options {
     pub exclude: Vec<String>,
     pub exclude_private_ips: bool,
     pub known_files: Option<String>,
+    pub strategy: String,
 }
 
 impl Default for Options {
@@ -124,6 +125,7 @@ impl Default for Options {
             exclude: Vec::new(),
             exclude_private_ips: false,
             known_files: None,
+            strategy: "depth-first".to_string(),
         }
     }
 }

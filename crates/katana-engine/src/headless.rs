@@ -192,7 +192,12 @@ impl Engine for HeadlessEngine {
             }
         };
 
-        while let Some(current_req) = queue.pop_front() {
+        let is_depth_first = self.options.strategy.eq_ignore_ascii_case("depth-first");
+        while let Some(current_req) = if is_depth_first {
+            queue.pop_back()
+        } else {
+            queue.pop_front()
+        } {
             let host = Url::parse(&current_req.url)
                 .ok()
                 .and_then(|u| u.host_str().map(String::from))
