@@ -98,7 +98,20 @@ impl ScopeManager {
             return re.is_match(hostname);
         }
 
-        if matches!(self.field_scope, FieldScope::Fqdn) {
+        let host_ip = hostname
+            .trim_matches(|c| c == '[' || c == ']')
+            .parse::<std::net::IpAddr>()
+            .ok();
+        let root_ip = root_hostname
+            .trim_matches(|c| c == '[' || c == ']')
+            .parse::<std::net::IpAddr>()
+            .ok();
+
+        // If either host or root is an IP address, or scope is FQDN, perform exact host matching
+        if matches!(self.field_scope, FieldScope::Fqdn) || host_ip.is_some() || root_ip.is_some() {
+            if let (Some(h_ip), Some(r_ip)) = (host_ip, root_ip) {
+                return h_ip == r_ip;
+            }
             return host_lower == root_lower;
         }
 
@@ -265,5 +278,33 @@ mod tests {
 
         // Rejected: matches out_of_scope
         assert!(!manager.validate("https://external.com/styles/main.css", "original.com"));
+    }
+
+    #[test]
+    fn test_scope_ip_address_exact_matching() {
+        // Even with rdn or dn, IP addresses must only match exactly and not treat octets as domain parts
+        let manager_rdn = ScopeManager::new(&[], &[], "rdn", false).unwrap();
+        let manager_dn = ScopeManager::new(&[], &[], "dn", false).unwrap();
+
+        // IPv4 exact match
+        assert!(manager_rdn.validate("http://192.168.1.1/index.html", "192.168.1.1"));
+        assert!(manager_dn.validate("http://192.168.1.1/index.html", "192.168.1.1"));
+
+        // IPv4 mismatch
+        assert!(!manager_rdn.validate("http://192.168.1.2/index.html", "192.168.1.1"));
+        assert!(!manager_dn.validate("http://192.168.1.2/index.html", "192.168.1.1"));
+
+        // Subdomain of IP or prefix lookalike must fail
+        assert!(!manager_rdn.validate("http://192.168.1.100/index.html", "192.168.1.1"));
+        assert!(!manager_dn.validate("http://192.168.1.100/index.html", "192.168.1.1"));
+
+        // Domain vs IP mismatch
+        assert!(!manager_rdn.validate("http://example.com/index.html", "192.168.1.1"));
+        assert!(!manager_rdn.validate("http://192.168.1.1/index.html", "example.com"));
+
+        // IPv6 exact match (including bracketed format in URL)
+        assert!(manager_rdn.validate("http://[::1]/index.html", "::1"));
+        assert!(manager_rdn.validate("http://[::1]/index.html", "[::1]"));
+        assert!(!manager_rdn.validate("http://[::2]/index.html", "::1"));
     }
 }
