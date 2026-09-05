@@ -106,10 +106,10 @@ impl HeadlessEngine {
         let robots_url = format!("{}/robots.txt", base_trimmed);
         if let Ok(resp) = self.client.get(&robots_url).send().await {
             if resp.status().is_success() {
-                if let Ok(content) = resp.text().await {
-                    let discovered = parse_robots_txt(&robots_url, &content);
-                    self.standard_engine.enqueue(queue, discovered, sender);
-                }
+                let content =
+                    crate::standard::read_bounded_body(resp, self.options.body_read_size).await;
+                let discovered = parse_robots_txt(&robots_url, &content);
+                self.standard_engine.enqueue(queue, discovered, sender);
             }
         }
 
@@ -117,10 +117,10 @@ impl HeadlessEngine {
         let sitemap_url = format!("{}/sitemap.xml", base_trimmed);
         if let Ok(resp) = self.client.get(&sitemap_url).send().await {
             if resp.status().is_success() {
-                if let Ok(content) = resp.text().await {
-                    let discovered = parse_sitemap_xml(&sitemap_url, &content);
-                    self.standard_engine.enqueue(queue, discovered, sender);
-                }
+                let content =
+                    crate::standard::read_bounded_body(resp, self.options.body_read_size).await;
+                let discovered = parse_sitemap_xml(&sitemap_url, &content);
+                self.standard_engine.enqueue(queue, discovered, sender);
             }
         }
     }
@@ -320,7 +320,11 @@ impl Engine for HeadlessEngine {
                                         (k.to_string(), v.to_str().unwrap_or("").to_string())
                                     })
                                     .collect();
-                                let body = resp.text().await.unwrap_or_default();
+                                let body = crate::standard::read_bounded_body(
+                                    resp,
+                                    self.options.body_read_size,
+                                )
+                                .await;
                                 Ok((status, headers, body))
                             }
                         }
@@ -333,7 +337,11 @@ impl Engine for HeadlessEngine {
                                 .iter()
                                 .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
                                 .collect();
-                            let body = resp.text().await.unwrap_or_default();
+                            let body = crate::standard::read_bounded_body(
+                                resp,
+                                self.options.body_read_size,
+                            )
+                            .await;
                             Ok((status, headers, body))
                         }
                     }
@@ -345,7 +353,8 @@ impl Engine for HeadlessEngine {
                         .iter()
                         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
                         .collect();
-                    let body = resp.text().await.unwrap_or_default();
+                    let body =
+                        crate::standard::read_bounded_body(resp, self.options.body_read_size).await;
                     Ok((status, headers, body))
                 };
 
