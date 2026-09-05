@@ -44,6 +44,7 @@ pub struct StandardEngine {
     active_queue: Arc<tokio::sync::Mutex<VecDeque<Request>>>,
     in_flight_requests: Arc<DashSet<String>>,
     tls_extractor: Arc<crate::tls::TlsExtractor>,
+    extension_validator: Arc<katana_core::ExtensionValidator>,
 }
 
 fn store_response_to_disk(
@@ -134,6 +135,12 @@ impl StandardEngine {
             }
         }
 
+        let extension_validator = Arc::new(katana_core::ExtensionValidator::new(
+            &options.extension_match,
+            &options.extension_filter,
+            options.no_extension_filter,
+        ));
+
         Ok(Self {
             options: Arc::new(options),
             client,
@@ -149,6 +156,7 @@ impl StandardEngine {
             active_queue: Arc::new(tokio::sync::Mutex::new(VecDeque::new())),
             in_flight_requests: Arc::new(DashSet::new()),
             tls_extractor: Arc::new(crate::tls::TlsExtractor::new()),
+            extension_validator,
         })
     }
 
@@ -209,6 +217,9 @@ impl StandardEngine {
                 continue;
             }
             if Url::parse(&nr.url).is_err() {
+                continue;
+            }
+            if !self.extension_validator.validate_path(&nr.url) {
                 continue;
             }
 
@@ -283,6 +294,9 @@ impl StandardEngine {
             if self.options.path_climb {
                 let parent_urls = extract_parent_paths(&nr.url);
                 for parent_url in parent_urls {
+                    if !self.extension_validator.validate_path(&parent_url) {
+                        continue;
+                    }
                     let mut check_url = parent_url.clone();
                     if self.options.filter_similar {
                         check_url = fingerprint_url(&check_url, Some(&self.path_trie));
@@ -873,5 +887,45 @@ mod tests {
 
         let limiter = engine.rate_limiter_second.as_ref().unwrap();
         limiter.until_ready().await;
+    }
+
+    #[test]
+    fn test_extension_filtering_in_enqueue() {
+        let options = Options::default();
+        let engine = StandardEngine::new(options).unwrap();
+        let mut queue = VecDeque::new();
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let reqs = vec![
+            Request {
+                url: "https://example.com/index.html".to_string(),
+                depth: 1,
+                root_hostname: "example.com".to_string(),
+                ..Default::default()
+            },
+            Request {
+                url: "https://example.com/logo.png".to_string(),
+                depth: 1,
+                root_hostname: "example.com".to_string(),
+                ..Default::default()
+            },
+            Request {
+                url: "https://example.com/archive.zip".to_string(),
+                depth: 1,
+                root_hostname: "example.com".to_string(),
+                ..Default::default()
+            },
+            Request {
+                url: "https://example.com/api/v1/data".to_string(),
+                depth: 1,
+                root_hostname: "example.com".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        engine.enqueue(&mut queue, reqs, &tx);
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue[0].url, "https://example.com/index.html");
+        assert_eq!(queue[1].url, "https://example.com/api/v1/data");
     }
 }
