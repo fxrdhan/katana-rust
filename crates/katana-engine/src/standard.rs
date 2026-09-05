@@ -364,35 +364,47 @@ impl StandardEngine {
         }
     }
 
-    /// Seed known files (robots.txt and sitemap.xml) if configured.
+    /// Seed known files (robots.txt and sitemap.xml) if configured via options.known_files (-kf, --known-files).
     async fn seed_known_files(
         &self,
         root_url: &str,
         queue: &mut VecDeque<Request>,
         sender: &mpsc::UnboundedSender<CrawlResult>,
     ) {
+        let kf_mode = match self.options.known_files.as_deref() {
+            Some(mode) => mode.to_lowercase(),
+            None => return,
+        };
+
+        let check_robots = kf_mode == "all" || kf_mode == "robotstxt";
+        let check_sitemap = kf_mode == "all" || kf_mode == "sitemapxml";
+
         let base_trimmed = root_url.trim_end_matches('/');
 
         // Fetch robots.txt
-        let robots_url = format!("{}/robots.txt", base_trimmed);
-        if self.network_policy.validate_url(&robots_url) {
-            if let Ok(resp) = self.client.get(&robots_url).send().await {
-                if resp.status().is_success() {
-                    let content = read_bounded_body(resp, self.options.body_read_size).await;
-                    let discovered = parse_robots_txt(&robots_url, &content);
-                    self.enqueue(queue, discovered, sender);
+        if check_robots {
+            let robots_url = format!("{}/robots.txt", base_trimmed);
+            if self.network_policy.validate_url(&robots_url) {
+                if let Ok(resp) = self.client.get(&robots_url).send().await {
+                    if resp.status().is_success() {
+                        let content = read_bounded_body(resp, self.options.body_read_size).await;
+                        let discovered = parse_robots_txt(&robots_url, &content);
+                        self.enqueue(queue, discovered, sender);
+                    }
                 }
             }
         }
 
         // Fetch sitemap.xml
-        let sitemap_url = format!("{}/sitemap.xml", base_trimmed);
-        if self.network_policy.validate_url(&sitemap_url) {
-            if let Ok(resp) = self.client.get(&sitemap_url).send().await {
-                if resp.status().is_success() {
-                    let content = read_bounded_body(resp, self.options.body_read_size).await;
-                    let discovered = parse_sitemap_xml(&sitemap_url, &content);
-                    self.enqueue(queue, discovered, sender);
+        if check_sitemap {
+            let sitemap_url = format!("{}/sitemap.xml", base_trimmed);
+            if self.network_policy.validate_url(&sitemap_url) {
+                if let Ok(resp) = self.client.get(&sitemap_url).send().await {
+                    if resp.status().is_success() {
+                        let content = read_bounded_body(resp, self.options.body_read_size).await;
+                        let discovered = parse_sitemap_xml(&sitemap_url, &content);
+                        self.enqueue(queue, discovered, sender);
+                    }
                 }
             }
         }
@@ -1131,5 +1143,58 @@ mod tests {
         assert_eq!(queue.len(), 2);
         assert_eq!(queue[0].url, "https://example.com/index.html");
         assert_eq!(queue[1].url, "https://example.com/api");
+    }
+
+    #[tokio::test]
+    async fn test_seed_known_files_configuration() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let body = "User-agent: *\nDisallow: /secret-admin\n";
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(resp.as_bytes()).await;
+            }
+        });
+
+        // 1. Without known_files, seed_known_files must do nothing
+        let options_none = Options {
+            known_files: None,
+            field_scope: "fqdn".to_string(),
+            ..Default::default()
+        };
+        let engine_none = StandardEngine::new(options_none).unwrap();
+        let mut q_none = VecDeque::new();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        engine_none
+            .seed_known_files(&format!("http://127.0.0.1:{}", port), &mut q_none, &tx)
+            .await;
+        assert_eq!(q_none.len(), 0);
+
+        // 2. With known_files = Some("robotstxt"), seed_known_files fetches robots.txt
+        let options_robots = Options {
+            known_files: Some("robotstxt".to_string()),
+            field_scope: "fqdn".to_string(),
+            ..Default::default()
+        };
+        let engine_robots = StandardEngine::new(options_robots).unwrap();
+        let mut q_robots = VecDeque::new();
+        engine_robots
+            .seed_known_files(&format!("http://127.0.0.1:{}", port), &mut q_robots, &tx)
+            .await;
+        assert_eq!(q_robots.len(), 1);
+        assert_eq!(
+            q_robots[0].url,
+            format!("http://127.0.0.1:{}/secret-admin", port)
+        );
     }
 }

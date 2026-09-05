@@ -90,9 +90,15 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    let max_depth = if args.known_files.is_some() && args.depth < 3 {
+        3
+    } else {
+        args.depth
+    };
+
     let options = Options {
         urls: target_urls.clone(),
-        max_depth: args.depth,
+        max_depth,
         crawl_duration,
         concurrency: args.concurrency,
         parallelism: args.parallelism,
@@ -140,6 +146,7 @@ async fn main() -> anyhow::Result<()> {
         no_extension_filter: args.no_extension_filter,
         exclude: args.exclude.clone(),
         exclude_private_ips: args.exclude_private_ips,
+        known_files: args.known_files,
         ..Default::default()
     };
 

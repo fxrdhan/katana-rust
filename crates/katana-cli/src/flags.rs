@@ -136,6 +136,10 @@ pub struct CliArgs {
     #[arg(long = "path-climb", alias = "pc")]
     pub path_climb: bool,
 
+    /// Enable crawling of known files (all, robotstxt, sitemapxml) (-kf, --known-files)
+    #[arg(long = "known-files", alias = "kf")]
+    pub known_files: Option<String>,
+
     /// Maximum pages to crawl per domain (-mdp)
     #[arg(long = "max-domain-pages", alias = "mdp", default_value_t = 0)]
     pub max_domain_pages: usize,
@@ -485,5 +489,14 @@ mod tests {
 
         assert_eq!(args.exclude, vec!["private-ips", "10.0.0.1"]);
         assert!(args.exclude_private_ips);
+    }
+
+    #[test]
+    fn test_cli_flags_known_files() {
+        let input = ["katana", "-u", "https://example.com", "-kf", "all"];
+        let normalized = normalize_cli_args(input);
+        let args = CliArgs::try_parse_from(normalized).unwrap();
+
+        assert_eq!(args.known_files.as_deref(), Some("all"));
     }
 }

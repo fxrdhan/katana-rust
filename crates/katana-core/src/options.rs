@@ -60,6 +60,7 @@ pub struct Options {
     pub no_extension_filter: bool,
     pub exclude: Vec<String>,
     pub exclude_private_ips: bool,
+    pub known_files: Option<String>,
 }
 
 impl Default for Options {
@@ -122,6 +123,7 @@ impl Default for Options {
             no_extension_filter: false,
             exclude: Vec::new(),
             exclude_private_ips: false,
+            known_files: None,
         }
     }
 }

@@ -119,6 +119,7 @@ async fn test_e2e_standard_crawler() {
         scrape_js: true,
         scrape_jsluice: true,
         scan_secrets: true,
+        known_files: Some("all".to_string()),
         ..Default::default()
     };
 
