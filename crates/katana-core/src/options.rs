@@ -55,6 +55,9 @@ pub struct Options {
     pub fields: Option<Vec<String>>,
     pub raw_request_file: Option<String>,
     pub resume_file: Option<String>,
+    pub extension_match: Vec<String>,
+    pub extension_filter: Vec<String>,
+    pub no_extension_filter: bool,
 }
 
 impl Default for Options {
@@ -112,6 +115,9 @@ impl Default for Options {
             fields: None,
             raw_request_file: None,
             resume_file: None,
+            extension_match: Vec::new(),
+            extension_filter: Vec::new(),
+            no_extension_filter: false,
         }
     }
 }
