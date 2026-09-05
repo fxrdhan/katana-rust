@@ -147,6 +147,7 @@ async fn main() -> anyhow::Result<()> {
         exclude: args.exclude.clone(),
         exclude_private_ips: args.exclude_private_ips,
         known_files: args.known_files,
+        strategy: args.strategy,
         ..Default::default()
     };
 
