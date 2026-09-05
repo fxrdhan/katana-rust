@@ -45,6 +45,7 @@ pub struct StandardEngine {
     in_flight_requests: Arc<DashSet<String>>,
     tls_extractor: Arc<crate::tls::TlsExtractor>,
     extension_validator: Arc<katana_core::ExtensionValidator>,
+    network_policy: Arc<katana_core::NetworkPolicy>,
 }
 
 fn store_response_to_disk(
@@ -167,6 +168,11 @@ impl StandardEngine {
             options.no_extension_filter,
         ));
 
+        let network_policy = Arc::new(katana_core::NetworkPolicy::new(
+            options.exclude_private_ips,
+            &options.exclude,
+        )?);
+
         Ok(Self {
             options: Arc::new(options),
             client,
@@ -183,6 +189,7 @@ impl StandardEngine {
             in_flight_requests: Arc::new(DashSet::new()),
             tls_extractor: Arc::new(crate::tls::TlsExtractor::new()),
             extension_validator,
+            network_policy,
         })
     }
 
@@ -238,11 +245,15 @@ impl StandardEngine {
         sender: &mpsc::UnboundedSender<CrawlResult>,
     ) {
         for nr in requests {
-            // 1. URL Sanity
+            // 1. URL Sanity & Network Policy (SSRF guard)
             if nr.url.is_empty() {
                 continue;
             }
             if Url::parse(&nr.url).is_err() {
+                continue;
+            }
+            if !self.network_policy.validate_url(&nr.url) {
+                debug!("Skipping request excluded by network policy: {}", nr.url);
                 continue;
             }
             if !self.extension_validator.validate_path(&nr.url) {
@@ -320,6 +331,9 @@ impl StandardEngine {
             if self.options.path_climb {
                 let parent_urls = extract_parent_paths(&nr.url);
                 for parent_url in parent_urls {
+                    if !self.network_policy.validate_url(&parent_url) {
+                        continue;
+                    }
                     if !self.extension_validator.validate_path(&parent_url) {
                         continue;
                     }
@@ -361,21 +375,25 @@ impl StandardEngine {
 
         // Fetch robots.txt
         let robots_url = format!("{}/robots.txt", base_trimmed);
-        if let Ok(resp) = self.client.get(&robots_url).send().await {
-            if resp.status().is_success() {
-                let content = read_bounded_body(resp, self.options.body_read_size).await;
-                let discovered = parse_robots_txt(&robots_url, &content);
-                self.enqueue(queue, discovered, sender);
+        if self.network_policy.validate_url(&robots_url) {
+            if let Ok(resp) = self.client.get(&robots_url).send().await {
+                if resp.status().is_success() {
+                    let content = read_bounded_body(resp, self.options.body_read_size).await;
+                    let discovered = parse_robots_txt(&robots_url, &content);
+                    self.enqueue(queue, discovered, sender);
+                }
             }
         }
 
         // Fetch sitemap.xml
         let sitemap_url = format!("{}/sitemap.xml", base_trimmed);
-        if let Ok(resp) = self.client.get(&sitemap_url).send().await {
-            if resp.status().is_success() {
-                let content = read_bounded_body(resp, self.options.body_read_size).await;
-                let discovered = parse_sitemap_xml(&sitemap_url, &content);
-                self.enqueue(queue, discovered, sender);
+        if self.network_policy.validate_url(&sitemap_url) {
+            if let Ok(resp) = self.client.get(&sitemap_url).send().await {
+                if resp.status().is_success() {
+                    let content = read_bounded_body(resp, self.options.body_read_size).await;
+                    let discovered = parse_sitemap_xml(&sitemap_url, &content);
+                    self.enqueue(queue, discovered, sender);
+                }
             }
         }
     }
@@ -1070,5 +1088,48 @@ mod tests {
             "Expected redirect destination /target/sub/ in queue, found: {:?}",
             urls
         );
+    }
+
+    #[test]
+    fn test_network_policy_filtering_in_enqueue() {
+        let options = Options {
+            exclude_private_ips: true,
+            ..Default::default()
+        };
+        let engine = StandardEngine::new(options).unwrap();
+        let mut queue = VecDeque::new();
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let reqs = vec![
+            Request {
+                url: "https://example.com/index.html".to_string(),
+                depth: 1,
+                root_hostname: "example.com".to_string(),
+                ..Default::default()
+            },
+            Request {
+                url: "http://127.0.0.1/admin".to_string(),
+                depth: 1,
+                root_hostname: "127.0.0.1".to_string(),
+                ..Default::default()
+            },
+            Request {
+                url: "http://169.254.169.254/latest/meta-data".to_string(),
+                depth: 1,
+                root_hostname: "169.254.169.254".to_string(),
+                ..Default::default()
+            },
+            Request {
+                url: "https://example.com/api".to_string(),
+                depth: 1,
+                root_hostname: "example.com".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        engine.enqueue(&mut queue, reqs, &tx);
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue[0].url, "https://example.com/index.html");
+        assert_eq!(queue[1].url, "https://example.com/api");
     }
 }
