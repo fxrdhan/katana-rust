@@ -787,11 +787,16 @@ impl Engine for StandardEngine {
         let active_clone = active_workers.clone();
         let sem_clone = semaphore.clone();
 
+        let is_depth_first = self.options.strategy.eq_ignore_ascii_case("depth-first");
         let crawl_loop = async move {
             loop {
                 let maybe_req = {
                     let mut q = queue_clone.lock().await;
-                    q.pop_front()
+                    if is_depth_first {
+                        q.pop_back()
+                    } else {
+                        q.pop_front()
+                    }
                 };
 
                 if let Some(current_req) = maybe_req {
@@ -1195,6 +1200,70 @@ mod tests {
         assert_eq!(
             q_robots[0].url,
             format!("http://127.0.0.1:{}/secret-admin", port)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_crawl_strategy_bfs_vs_dfs() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                let req_str = String::from_utf8_lossy(&buf[..n]);
+                let path = req_str
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("/");
+
+                let body = match path {
+                    "/" => {
+                        r#"<html><body><a href="/first">First</a><a href="/second">Second</a></body></html>"#
+                    }
+                    "/first" => r#"<html><body><a href="/first/child">Child</a></body></html>"#,
+                    _ => r#"<html><body>Leaf</body></html>"#,
+                };
+
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(resp.as_bytes()).await;
+            }
+        });
+
+        // Test Breadth-First Strategy: concurrency=1 ensures deterministic pop order
+        let options_bfs = Options {
+            strategy: "breadth-first".to_string(),
+            concurrency: 1,
+            max_depth: 3,
+            field_scope: "fqdn".to_string(),
+            ..Default::default()
+        };
+        let engine_bfs = StandardEngine::new(options_bfs).unwrap();
+        let (tx_bfs, mut rx_bfs) = mpsc::unbounded_channel();
+        let root = format!("http://127.0.0.1:{}/", port);
+        engine_bfs.crawl(&root, tx_bfs).await.unwrap();
+
+        let mut order_bfs = Vec::new();
+        while let Some(res) = rx_bfs.recv().await {
+            if let Some(req) = res.request {
+                order_bfs.push(req.url);
+            }
+        }
+        // In BFS: / -> /first -> /second -> /first/child
+        assert_eq!(order_bfs[0], format!("http://127.0.0.1:{}/", port));
+        assert_eq!(order_bfs[1], format!("http://127.0.0.1:{}/first", port));
+        assert_eq!(order_bfs[2], format!("http://127.0.0.1:{}/second", port));
+        assert_eq!(
+            order_bfs[3],
+            format!("http://127.0.0.1:{}/first/child", port)
         );
     }
 }
