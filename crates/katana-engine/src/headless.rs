@@ -100,27 +100,39 @@ impl HeadlessEngine {
         queue: &mut VecDeque<Request>,
         sender: &mpsc::UnboundedSender<CrawlResult>,
     ) {
+        let kf_mode = match self.options.known_files.as_deref() {
+            Some(mode) => mode.to_lowercase(),
+            None => return,
+        };
+
+        let check_robots = kf_mode == "all" || kf_mode == "robotstxt";
+        let check_sitemap = kf_mode == "all" || kf_mode == "sitemapxml";
+
         let base_trimmed = root_url.trim_end_matches('/');
 
         // Fetch robots.txt
-        let robots_url = format!("{}/robots.txt", base_trimmed);
-        if let Ok(resp) = self.client.get(&robots_url).send().await {
-            if resp.status().is_success() {
-                let content =
-                    crate::standard::read_bounded_body(resp, self.options.body_read_size).await;
-                let discovered = parse_robots_txt(&robots_url, &content);
-                self.standard_engine.enqueue(queue, discovered, sender);
+        if check_robots {
+            let robots_url = format!("{}/robots.txt", base_trimmed);
+            if let Ok(resp) = self.client.get(&robots_url).send().await {
+                if resp.status().is_success() {
+                    let content =
+                        crate::standard::read_bounded_body(resp, self.options.body_read_size).await;
+                    let discovered = parse_robots_txt(&robots_url, &content);
+                    self.standard_engine.enqueue(queue, discovered, sender);
+                }
             }
         }
 
         // Fetch sitemap.xml
-        let sitemap_url = format!("{}/sitemap.xml", base_trimmed);
-        if let Ok(resp) = self.client.get(&sitemap_url).send().await {
-            if resp.status().is_success() {
-                let content =
-                    crate::standard::read_bounded_body(resp, self.options.body_read_size).await;
-                let discovered = parse_sitemap_xml(&sitemap_url, &content);
-                self.standard_engine.enqueue(queue, discovered, sender);
+        if check_sitemap {
+            let sitemap_url = format!("{}/sitemap.xml", base_trimmed);
+            if let Ok(resp) = self.client.get(&sitemap_url).send().await {
+                if resp.status().is_success() {
+                    let content =
+                        crate::standard::read_bounded_body(resp, self.options.body_read_size).await;
+                    let discovered = parse_sitemap_xml(&sitemap_url, &content);
+                    self.standard_engine.enqueue(queue, discovered, sender);
+                }
             }
         }
     }
